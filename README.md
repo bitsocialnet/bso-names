@@ -124,5 +124,4 @@ The other files in `audit/` are upstream's audits.
 
 ## License
 
-GPL-3.0-or-later, see [LICENSE](LICENSE). The upstream code is by zOrg and others under the MIT
-license, whose notice is kept in [LICENSE-MIT](LICENSE-MIT).
+MIT, as upstream. See [LICENSE](LICENSE).
