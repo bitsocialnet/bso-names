@@ -46,7 +46,9 @@ contract NameNFTTest is Test {
     event TextChanged(bytes32 indexed node, string indexed key, string value);
 
     function setUp() public {
-        nft = new NameNFT();
+        // Fork: no seed list, and public registration is open from SEED_END.
+        nft = new NameNFT(bytes32(0), 0);
+        vm.warp(nft.SEED_END());
         vm.deal(alice, 1000 ether);
         vm.deal(bob, 1000 ether);
         vm.deal(carol, 1000 ether);
@@ -1185,7 +1187,8 @@ contract NameNFTReentrancyTest is Test {
     uint256 constant MIN_COMMITMENT_AGE = 60;
 
     function setUp() public {
-        nft = new NameNFT();
+        nft = new NameNFT(bytes32(0), 0);
+        vm.warp(nft.SEED_END());
         attacker = new MaliciousReceiver(nft);
         vm.deal(address(attacker), 100 ether);
     }

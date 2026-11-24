@@ -4,6 +4,7 @@ pragma solidity ^0.8.30;
 import {Base64} from "solady/utils/Base64.sol";
 import {ERC721} from "solady/tokens/ERC721.sol";
 import {LibString} from "solady/utils/LibString.sol";
+import {MerkleProofLib} from "solady/utils/MerkleProofLib.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {ReentrancyGuard} from "soledge/utils/ReentrancyGuard.sol";
 
@@ -37,6 +38,9 @@ contract NameNFT is ERC721, ReentrancyGuard {
     error CommitmentTooOld();
     error AlreadyRegistered();
     error CommitmentNotFound();
+    error NotOpen();
+    error SeedingEnded();
+    error InvalidProof();
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
@@ -55,6 +59,9 @@ contract NameNFT is ERC721, ReentrancyGuard {
     event ContenthashChanged(bytes32 indexed node, bytes contenthash);
     event AddressChanged(bytes32 indexed node, uint256 coinType, bytes addr);
     event TextChanged(bytes32 indexed node, string indexed key, string value);
+
+    /// @dev Emitted by the seed that brings `seededCount` to `SEED_COUNT`.
+    event RegistrationOpening(uint256 openAt);
 
     /*//////////////////////////////////////////////////////////////
                                 CONSTANTS
@@ -80,6 +87,17 @@ contract NameNFT is ERC721, ReentrancyGuard {
     uint256 constant MAX_PREMIUM = 100 ether;
     uint256 constant PREMIUM_DECAY_PERIOD = 21 days;
 
+    /// @dev Delay between the last seed and the opening of public registration.
+    uint256 public constant OPEN_DELAY = 1 hours;
+    uint256 constant SEED_PERIOD = 7 days;
+
+    /// @dev Root of the OpenZeppelin StandardMerkleTree over the seed list (BSIP-13).
+    bytes32 public immutable SEED_ROOT;
+    /// @dev Number of entries in the seed list.
+    uint256 public immutable SEED_COUNT;
+    /// @dev Deployment time + 7 days. From here on `seed` and `seedBatch` revert.
+    uint256 public immutable SEED_END;
+
     /*//////////////////////////////////////////////////////////////
                                  STORAGE
     //////////////////////////////////////////////////////////////*/
@@ -102,6 +120,34 @@ contract NameNFT is ERC721, ReentrancyGuard {
     mapping(uint256 => mapping(uint256 => bytes)) internal _contenthash;
     mapping(uint256 => mapping(uint256 => mapping(uint256 => bytes))) internal _coinAddr;
     mapping(uint256 => mapping(uint256 => mapping(string => string))) internal _text;
+
+    /// @dev Names registered by `seed` / `seedBatch`.
+    uint256 public seededCount;
+    /// @dev Set once, when `seededCount` reaches `SEED_COUNT`. Public registration opens at
+    ///      `openAt`, or at `SEED_END` if that comes first or the count is never reached.
+    uint256 public openAt;
+
+    struct SeedEntry {
+        string label;
+        uint256 parent;
+        address owner;
+        string record;
+        bytes32[] proof;
+    }
+
+    constructor(bytes32 seedRoot, uint256 seedCount) {
+        SEED_ROOT = seedRoot;
+        SEED_COUNT = seedCount;
+        SEED_END = block.timestamp + SEED_PERIOD;
+    }
+
+    /// @dev Reverts until the opening of public registration.
+    modifier whenOpen() {
+        uint256 opening = openAt;
+        if (opening == 0 || opening > SEED_END) opening = SEED_END;
+        if (block.timestamp < opening) revert NotOpen();
+        _;
+    }
 
     /*//////////////////////////////////////////////////////////////
                              ERC721 METADATA
@@ -230,6 +276,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
         external
         payable
         nonReentrant
+        whenOpen
         returns (uint256 tokenId)
     {
         uint256 fee = getFee(bytes(label).length);
@@ -263,6 +310,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
     function registerSubdomain(string calldata label, uint256 parentId)
         external
         nonReentrant
+        whenOpen
         returns (uint256)
     {
         if (!_isActive(parentId)) revert Expired();
@@ -273,11 +321,91 @@ contract NameNFT is ERC721, ReentrancyGuard {
     function registerSubdomainFor(string calldata label, uint256 parentId, address to)
         external
         nonReentrant
+        whenOpen
         returns (uint256)
     {
         if (!_isActive(parentId)) revert Expired();
         if (ownerOf(parentId) != msg.sender) revert NotParentOwner();
         return _register(label, parentId, to);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                               SEEDING
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Register one entry of the seed list to its listed owner, free of charge.
+    /// @dev Callable by anyone before `SEED_END`. The leaf is the OpenZeppelin StandardMerkleTree
+    ///      leaf for `(label, parent, owner, record)`, hashed with the label exactly as supplied.
+    ///      `parent` is 0 for a top-level name, otherwise the parent's token ID.
+    function seed(
+        string calldata label,
+        uint256 parent,
+        address owner,
+        string calldata record,
+        bytes32[] calldata proof
+    ) external nonReentrant {
+        if (block.timestamp >= SEED_END) revert SeedingEnded();
+        if (!_seed(label, parent, owner, record, proof)) revert AlreadyRegistered();
+    }
+
+    /// @notice Seed several entries in order. An entry whose name already has a record is
+    ///         skipped, so an entry seeded by someone else cannot revert the batch.
+    /// @dev A parent must be seeded before its subdomains, in an earlier call or earlier in
+    ///      the same batch.
+    function seedBatch(SeedEntry[] calldata entries) external nonReentrant {
+        if (block.timestamp >= SEED_END) revert SeedingEnded();
+        for (uint256 i; i < entries.length; ++i) {
+            SeedEntry calldata e = entries[i];
+            _seed(e.label, e.parent, e.owner, e.record, e.proof);
+        }
+    }
+
+    /// @dev Its own mint path, not `_register`: no parent-ownership check, `_mint` rather than
+    ///      `_safeMint`. Returns false, changing nothing, if the name already has a record.
+    function _seed(
+        string calldata label,
+        uint256 parent,
+        address owner,
+        string calldata record,
+        bytes32[] calldata proof
+    ) internal returns (bool) {
+        bytes memory normalized = _validateAndNormalize(bytes(label));
+        bytes32 parentNode = parent == 0 ? BSO_NODE : bytes32(parent);
+        uint256 tokenId = uint256(keccak256(abi.encodePacked(parentNode, keccak256(normalized))));
+
+        if (_recordExists(tokenId)) return false;
+
+        bytes32 leaf = keccak256(bytes.concat(keccak256(abi.encode(label, parent, owner, record))));
+        if (!MerkleProofLib.verifyCalldata(proof, SEED_ROOT, leaf)) revert InvalidProof();
+
+        if (parent != 0) {
+            if (!_isActive(parent)) revert Expired();
+            if (_getDepth(parent) >= MAX_SUBDOMAIN_DEPTH) revert TooDeep();
+        }
+
+        records[tokenId] = NameRecord({
+            label: string(normalized),
+            parent: parent,
+            expiresAt: parent == 0 ? uint64(block.timestamp + REGISTRATION_PERIOD) : 0,
+            epoch: 1,
+            parentEpoch: parent == 0 ? 0 : records[parent].epoch
+        });
+
+        _mint(owner, tokenId);
+
+        emit NameRegistered(tokenId, string(normalized), owner, records[tokenId].expiresAt);
+        if (parent != 0) emit SubdomainRegistered(tokenId, parent, string(normalized));
+
+        if (bytes(record).length != 0) {
+            _text[tokenId][recordVersion[tokenId]]["bitsocial"] = record;
+            emit TextChanged(bytes32(tokenId), "bitsocial", record);
+        }
+
+        if (++seededCount == SEED_COUNT) {
+            openAt = block.timestamp + OPEN_DELAY;
+            emit RegistrationOpening(openAt);
+        }
+        return true;
     }
 
     /*//////////////////////////////////////////////////////////////
