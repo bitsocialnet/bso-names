@@ -1,3 +1,0 @@
-ckzg==2.1.8
-coincurve==21.0.0
-pycryptodome==4.2.0

@@ -1,14 +1,10 @@
-# The test suites a push or pull request can affect, and every suite nightly and on a manual run. A green
-# run on main is what deploys production (deploy.yml). The nightly run adds the suites that need live
-# networks (mainnet forks, Sepolia RPC), which can fail on a flaky public endpoint and so don't gate deploys.
+# Builds the registry, checks that it fits under the contract size limit, and runs the tests.
 name: CI
 
 on:
   push:
-    branches: ['**']
+    branches: [master]
   pull_request:
-  schedule:
-    - cron: '23 5 * * *'
   workflow_dispatch:
 
 permissions:
@@ -16,284 +12,28 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 env:
+  # The version upstream builds with. Changing it changes the bytecode.
   FOUNDRY_VERSION: v1.5.1
-  NODE_VERSION: '24'
 
 jobs:
-  # Which suites to run (scripts/ci-changes.mjs): those with an input that differs from the last commit
-  # that passed CI on this branch (on main, for a branch's first run; the target branch, for a pull
-  # request). Measuring from the last green commit rather than the previous push keeps a failing suite
-  # running until it passes. Nightly and manual runs, and changes to the workflows or the rules, run all.
-  changes:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      actions: read # the last green run
-    outputs:
-      contracts: ${{ steps.changes.outputs.contracts }}
-      gateway: ${{ steps.changes.outputs.gateway }}
-      dapp: ${{ steps.changes.outputs.dapp }}
-      sdk: ${{ steps.changes.outputs.sdk }}
-      snap: ${{ steps.changes.outputs.snap }}
-      poster: ${{ steps.changes.outputs.poster }}
-      image: ${{ steps.changes.outputs.image }}
-      mirror: ${{ steps.changes.outputs.mirror }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - run: node --test scripts/ci-changes.test.mjs
-      - id: changes
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT: ${{ github.event_name }}
-          REF_NAME: ${{ github.ref_name }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
-        run: |
-          base=
-          if [ "$EVENT" = pull_request ]; then
-            base=$PR_BASE
-          elif [ "$EVENT" = push ]; then
-            for branch in "$REF_NAME" main; do
-              base=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" -f branch="$branch" \
-                -f event=push -f status=success -f per_page=1 --jq '.workflow_runs[0].head_sha // empty' || true)
-              [ -n "$base" ] && break
-            done
-          fi
-          node scripts/ci-changes.mjs "$base" >> "$GITHUB_OUTPUT"
-
   contracts:
-    needs: changes
-    if: needs.changes.outputs.contracts == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      # The invariant campaign is most of this job's time: 256 runs on pushes, the full 1000 nightly.
-      FOUNDRY_INVARIANT_RUNS: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '1000' || '256' }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: recursive
-          persist-credentials: false
-      - uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
-        with:
-          version: ${{ env.FOUNDRY_VERSION }}
-      # The last build, so forge only recompiles the sources that changed since (its cache tracks them).
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            out
-            cache
-          key: forge-${{ env.FOUNDRY_VERSION }}-${{ hashFiles('foundry.toml', 'foundry.lock', '.gitmodules', 'src/**', 'test/**', 'script/**') }}
-          restore-keys: forge-${{ env.FOUNDRY_VERSION }}-
-      - run: forge build
-      - run: forge test --no-match-contract 'ForkTest$|^SubdomainRegistrarTest$'
-
-  gateway:
-    needs: changes
-    if: needs.changes.outputs.gateway == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - run: node --test *.test.js
-        working-directory: gateway
-
-  dapp:
-    needs: changes
-    if: needs.changes.outputs.dapp == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - run: node --test gweiNS.test.js
-        working-directory: dapp
-
-  # The dapp's container (root Dockerfile, dapp/nginx.conf.template): built, started, and checked for
-  # the types, cache headers, ETags and 304s browsers rely on (scripts/check-dapp-image.sh).
-  image:
-    needs: changes
-    if: needs.changes.outputs.image == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - run: docker build --build-arg RAILWAY_GIT_COMMIT_SHA=$GITHUB_SHA -t gwei-dapp .
-      - run: |
-          docker run -d --name dapp -p 8080:8080 gwei-dapp
-          for i in $(seq 1 30); do curl -fsS -o /dev/null http://localhost:8080/ && break; sleep 1; done
-      - run: scripts/check-dapp-image.sh http://localhost:8080 "$GITHUB_SHA"
-      - if: failure()
-        run: docker logs dapp
-
-  # gwei-mirror (mirror/): its tests, then its image, started offline: the container's own IPFS node must
-  # come up and the mirror reach it, before the dead RPC fails the check. A push to main publishes the
-  # image as ghcr.io/<owner>/gwei-mirror for amd64 and arm64 (Raspberry Pis, Macs).
-  mirror:
-    needs: changes
-    if: needs.changes.outputs.mirror == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    permissions:
-      contents: read
-      packages: write # the image, on main only
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - run: node --test *.test.mjs
-        working-directory: mirror
-      # The npm package is one bundled file: it must build and start on its own.
-      - run: npm ci --no-audit --no-fund && npm run build && cp dist/gwei-mirror.mjs "$RUNNER_TEMP/" && node "$RUNNER_TEMP/gwei-mirror.mjs" --help > /dev/null
-        working-directory: mirror
-      - run: docker build -f mirror/Dockerfile -t gwei-mirror .
-      - run: |
-          status=0
-          timeout 180 docker run --name mirror gwei-mirror --once --rpc http://127.0.0.1:9 > mirror.log 2>&1 || status=$?
-          cat mirror.log
-          [ "$status" = 1 ] && grep -q 'pinning .gwei posts on IPFS node' mirror.log && grep -q 'the check failed' mirror.log
-      - name: Publish the image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker run --privileged --rm tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0 --install arm64
-          docker buildx create --use --driver docker-container
-          image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/gwei-mirror
-          docker buildx build -f mirror/Dockerfile --platform linux/amd64,linux/arm64 \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "$image:latest" -t "$image:${GITHUB_SHA::12}" --push .
-
-  sdk:
-    needs: changes
-    if: needs.changes.outputs.sdk == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: sdk
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
           persist-credentials: false
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 10.33.2
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-          cache-dependency-path: sdk/pnpm-lock.yaml
-      # abi:check compares src/abi.ts with `forge inspect` of NameNFT.
-      - uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
+      - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: ${{ env.FOUNDRY_VERSION }}
-      - run: pnpm install --frozen-lockfile --ignore-scripts
-      - run: pnpm check
-      # client.test.ts calls a live Sepolia RPC; it runs in the nightly `live` job instead.
-      - run: pnpm exec tsx --test $(ls src/*.test.ts | grep -v client.test.ts)
-
-  snap:
-    needs: changes
-    if: needs.changes.outputs.snap == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: snap
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: snap/package-lock.json
-      - run: npm ci --ignore-scripts --no-audit --no-fund
-      - run: npm test
-      # The build rewrites the manifest's bundle hash; a stale committed manifest would ship a snap
-      # MetaMask rejects.
-      - run: git diff --exit-code snap.manifest.json
-
-  poster:
-    needs: changes
-    if: needs.changes.outputs.poster == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: posts/poster
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: recursive
-          persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: '3.12'
-          cache: pip
-          cache-dependency-path: posts/poster/requirements.txt
-      # anvil and cast for the end-to-end test, node for its run of the dapp's KZG.
-      - uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
-        with:
-          version: ${{ env.FOUNDRY_VERSION }}
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      # The end-to-end test deploys these two on anvil. Built on their own they take seconds, so this
-      # job doesn't wait for (or need) the contracts job.
-      - run: forge build src/NameNFT.sol src/GnsPosts.sol
-        working-directory: ${{ github.workspace }}
-      - run: pip install -r requirements.txt
-      # The mainnet KZG trusted setup, pinned by hash as in the Dockerfile.
-      - run: |
-          curl -fsSL -o trusted_setup.txt https://raw.githubusercontent.com/ethereum/c-kzg-4844/main/src/trusted_setup.txt
-          echo "d39b9f2d047cc9dca2de58f264b6a09448ccd34db967881a6713eacacf0f26b7  trusted_setup.txt" | sha256sum -c
-      - run: POSTER_TRUSTED_SETUP=trusted_setup.txt python -m unittest test_poster
-
-  live:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: recursive
-          persist-credentials: false
-      - uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
-        with:
-          version: ${{ env.FOUNDRY_VERSION }}
-      - run: forge test --match-contract 'ForkTest$|^SubdomainRegistrarTest$'
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 10.33.2
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - run: pnpm install --frozen-lockfile --ignore-scripts && pnpm exec tsx --test src/client.test.ts
-        working-directory: sdk
+      - name: Format
+        run: forge fmt --check src
+      # Fails if NameNFT's runtime bytecode exceeds the 24,576-byte limit.
+      - name: Build and check contract sizes
+        run: forge build --sizes --skip test --skip script
+      - name: Test
+        run: forge test
