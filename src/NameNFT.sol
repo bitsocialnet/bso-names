@@ -41,6 +41,8 @@ contract NameNFT is ERC721, ReentrancyGuard {
     error NotOpen();
     error SeedingEnded();
     error InvalidProof();
+    error Frozen();
+    error AlreadySunset();
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
@@ -62,6 +64,8 @@ contract NameNFT is ERC721, ReentrancyGuard {
 
     /// @dev Emitted by the seed that brings `seededCount` to `SEED_COUNT`.
     event RegistrationOpening(uint256 openAt);
+    /// @dev Emitted by `sunset()`. The registry is frozen from `sunsetAt` on.
+    event SunsetScheduled(uint256 sunsetAt);
 
     /*//////////////////////////////////////////////////////////////
                                 CONSTANTS
@@ -94,6 +98,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
     /// @dev Delay between the last seed and the opening of public registration.
     uint256 public constant OPEN_DELAY = 1 hours;
     uint256 constant SEED_PERIOD = 7 days;
+    uint256 constant SUNSET_NOTICE = 30 days;
 
     /// @dev Root of the OpenZeppelin StandardMerkleTree over the seed list (BSIP-13).
     bytes32 public immutable SEED_ROOT;
@@ -130,6 +135,9 @@ contract NameNFT is ERC721, ReentrancyGuard {
     /// @dev Set once, when `seededCount` reaches `SEED_COUNT`. Public registration opens at
     ///      `openAt`, or at `SEED_END` if that comes first or the count is never reached.
     uint256 public openAt;
+    /// @dev Set once, by `sunset()`. From `sunsetAt` on every state-changing function reverts,
+    ///      except `withdraw()`. Zero means no sunset is scheduled.
+    uint256 public sunsetAt;
 
     struct SeedEntry {
         string label;
@@ -143,6 +151,26 @@ contract NameNFT is ERC721, ReentrancyGuard {
         SEED_ROOT = seedRoot;
         SEED_COUNT = seedCount;
         SEED_END = block.timestamp + SEED_PERIOD;
+    }
+
+    /// @dev Reverts once the registry is frozen.
+    modifier notFrozen() {
+        _checkNotFrozen();
+        _;
+    }
+
+    function _checkNotFrozen() internal view {
+        uint256 frozenFrom = sunsetAt;
+        if (frozenFrom != 0 && block.timestamp >= frozenFrom) revert Frozen();
+    }
+
+    /// @notice Schedule the freeze of the registry, 30 days from now. Only `FEE_RECIPIENT`,
+    ///         only once. It cannot be cancelled or delayed.
+    function sunset() external {
+        if (msg.sender != FEE_RECIPIENT) revert Unauthorized();
+        if (sunsetAt != 0) revert AlreadySunset();
+        sunsetAt = block.timestamp + SUNSET_NOTICE;
+        emit SunsetScheduled(sunsetAt);
     }
 
     /// @dev Reverts until the opening of public registration.
@@ -174,8 +202,21 @@ contract NameNFT is ERC721, ReentrancyGuard {
     {
         // Allow mint and burn, block transfers of inactive tokens
         if (from != address(0) && to != address(0)) {
+            _checkNotFrozen();
             if (!_isActive(tokenId)) revert Expired();
         }
+    }
+
+    function approve(address account, uint256 id) public payable override(ERC721) notFrozen {
+        super.approve(account, id);
+    }
+
+    function setApprovalForAll(address operator, bool isApproved)
+        public
+        override(ERC721)
+        notFrozen
+    {
+        super.setApprovalForAll(operator, isApproved);
     }
 
     function tokenURI(uint256 tokenId) public view override(ERC721) returns (string memory) {
@@ -265,7 +306,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
         return keccak256(abi.encode(normalized, owner, secret));
     }
 
-    function commit(bytes32 commitment) public {
+    function commit(bytes32 commitment) public notFrozen {
         if (
             commitments[commitment] != 0
                 && block.timestamp <= commitments[commitment] + MAX_COMMITMENT_AGE
@@ -280,6 +321,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
         external
         payable
         nonReentrant
+        notFrozen
         whenOpen
         returns (uint256 tokenId)
     {
@@ -314,6 +356,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
     function registerSubdomain(string calldata label, uint256 parentId)
         external
         nonReentrant
+        notFrozen
         whenOpen
         returns (uint256)
     {
@@ -325,6 +368,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
     function registerSubdomainFor(string calldata label, uint256 parentId, address to)
         external
         nonReentrant
+        notFrozen
         whenOpen
         returns (uint256)
     {
@@ -416,7 +460,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
                                RENEWAL
     //////////////////////////////////////////////////////////////*/
 
-    function renew(uint256 tokenId) public payable nonReentrant {
+    function renew(uint256 tokenId) public payable nonReentrant notFrozen {
         NameRecord storage record = records[tokenId];
         if (bytes(record.label).length == 0) revert TokenDoesNotExist();
         if (record.parent != 0) revert Unauthorized();
@@ -454,14 +498,14 @@ contract NameNFT is ERC721, ReentrancyGuard {
                               RESOLUTION
     //////////////////////////////////////////////////////////////*/
 
-    function setAddr(uint256 tokenId, address addr) public {
+    function setAddr(uint256 tokenId, address addr) public notFrozen {
         if (!_isActive(tokenId)) revert Expired();
         if (ownerOf(tokenId) != msg.sender) revert Unauthorized();
         _resolvedAddress[tokenId][recordVersion[tokenId]] = addr;
         emit AddrChanged(bytes32(tokenId), addr);
     }
 
-    function setPrimaryName(uint256 tokenId) public {
+    function setPrimaryName(uint256 tokenId) public notFrozen {
         if (tokenId != 0) {
             if (!_isActive(tokenId)) revert Expired();
             address resolved = resolve(tokenId);
@@ -487,7 +531,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
                          ENS-COMPATIBLE RESOLVER
     //////////////////////////////////////////////////////////////*/
 
-    function setContenthash(uint256 tokenId, bytes calldata hash) public {
+    function setContenthash(uint256 tokenId, bytes calldata hash) public notFrozen {
         if (!_isActive(tokenId)) revert Expired();
         if (ownerOf(tokenId) != msg.sender) revert Unauthorized();
         _contenthash[tokenId][recordVersion[tokenId]] = hash;
@@ -499,7 +543,10 @@ contract NameNFT is ERC721, ReentrancyGuard {
         return _contenthash[tokenId][recordVersion[tokenId]];
     }
 
-    function setAddrForCoin(uint256 tokenId, uint256 coinType, bytes calldata addr) public {
+    function setAddrForCoin(uint256 tokenId, uint256 coinType, bytes calldata addr)
+        public
+        notFrozen
+    {
         if (!_isActive(tokenId)) revert Expired();
         if (ownerOf(tokenId) != msg.sender) revert Unauthorized();
         _coinAddr[tokenId][recordVersion[tokenId]][coinType] = addr;
@@ -518,7 +565,10 @@ contract NameNFT is ERC721, ReentrancyGuard {
         return _coinAddr[tokenId][v][coinType];
     }
 
-    function setText(uint256 tokenId, string calldata key, string calldata value) public {
+    function setText(uint256 tokenId, string calldata key, string calldata value)
+        public
+        notFrozen
+    {
         if (!_isActive(tokenId)) revert Expired();
         if (ownerOf(tokenId) != msg.sender) revert Unauthorized();
         _text[tokenId][recordVersion[tokenId]][key] = value;
