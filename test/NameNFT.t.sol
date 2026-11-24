@@ -1053,7 +1053,9 @@ contract NameNFTTest is Test {
 
             // Fee is length-based, so a short fuzzed label needs its tier, not the default.
             // Compute it before the prank so getFee() doesn't consume the prank meant for reveal.
-            uint256 fee = nft.getFee(bytes(label).length);
+            // Fork: the tier goes by characters, not bytes. Pay the top tier; reveal refunds
+            // the rest.
+            uint256 fee = FEE_LEN1;
             vm.prank(alice);
             uint256 tokenId = nft.reveal{value: fee}(label, secret);
 

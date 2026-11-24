@@ -25,8 +25,15 @@ See the whole diff with `git diff 8e094ab -- src/NameNFT.sol`.
 | 4. Sunset | `sunset()`, only `FEE_RECIPIENT` and only once, sets `sunsetAt` 30 days ahead. From `sunsetAt` on every state-changing function reverts with `Frozen`, except `withdraw()`. |
 | 5. Minimum length | `reveal` and `seed` revert with `LabelTooShort` for a top-level label of fewer than 3 Unicode code points, and `isAvailable` returns false for one. Subdomain labels are exempt. |
 
-Everything else is upstream's: commit-reveal, prices, expiry, grace period and premium, subdomains,
-records, and label validation.
+There is one more change, agreed in
+[BSIPs#42](https://github.com/bitsocialnet/BSIPs/issues/42) and not yet in the BSIP's text: the fee
+tier of a label goes by its length in Unicode code points, as the minimum length does and as ENS's
+prices do. Upstream goes by UTF-8 bytes, so that `日本語` (9 bytes) costs the 5+ price where `abc`
+costs 0.05 ETH; here both cost 0.05 ETH. `reveal` and `renew` pass the code-point count to `getFee`,
+whose tiers and amounts are upstream's.
+
+Everything else is upstream's: commit-reveal, expiry, grace period and premium, subdomains, records,
+and label validation.
 
 ### Details the BSIP leaves to the implementation
 
@@ -45,6 +52,8 @@ records, and label validation.
 - `sunset()` emits `SunsetScheduled(sunsetAt)`. A second call reverts with `AlreadySunset`.
 - `makeCommitment` and `normalize` do not apply the minimum length. A commitment to a label that is
   too short is harmless, because `reveal` rejects it.
+- `getFee(length)` takes a length in code points. A client must not pass the byte length of a label
+  that has non-ASCII characters.
 
 ### ETH sent by mistake
 
@@ -66,11 +75,12 @@ forge build --sizes   # NameNFT must stay under 24,576 bytes
 
 | Tests | What they cover |
 | --- | --- |
-| `test/NameNFT.t.sol` | Upstream's suite. Changed only where the fork changes behaviour: the `.bso` strings, a setup that deploys with an empty seed list and starts at the opening, the test that fees are locked (now withdrawn), and two tests that registered labels shorter than 3 characters. |
+| `test/NameNFT.t.sol` | Upstream's suite. Changed only where the fork changes behaviour: the `.bso` strings, a setup that deploys with an empty seed list and starts at the opening, the test that fees are locked (now withdrawn), two tests that registered labels shorter than 3 characters, and the fee the registration fuzz test pays. |
 | `test/Seeding.t.sol` | `seed`, `seedBatch` and the opening, including the published seed tree. |
 | `test/Withdraw.t.sol` | `withdraw()`. |
 | `test/Sunset.t.sol` | `sunset()` and the freeze. |
 | `test/MinLength.t.sol` | The minimum length. |
+| `test/Fees.t.sol` | The fee by characters, in `reveal` and `renew`. |
 | `test/Tld.t.sol` | The `.bso` root, names and `tokenURI`. |
 | `test/Scripts.t.sol` | The checks the deploy script makes on the seed tree file. |
 

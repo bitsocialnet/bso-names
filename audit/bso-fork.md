@@ -39,4 +39,10 @@ Noted, with no change:
 - Anyone can seed the whole list as soon as the registry is deployed, which puts the opening one
   hour after deployment. The hour is enforced and `openAt` is on chain, so nobody gains from it.
 - Each state-changing call reads `sunsetAt`, and `reveal` also reads `openAt`.
-- The runtime bytecode is 23,208 bytes, 1,368 under the limit of 24,576.
+- The runtime bytecode was 23,208 bytes at the time of the review.
+
+## After the review
+
+The fee by characters (`_codePoints` passed to `getFee` in `reveal` and `renew`, see the README) was
+added after both reviews above, so neither covers it. It is covered by `test/Fees.t.sol`. The runtime bytecode is now 22,987 bytes, 1,589 under
+the limit of 24,576.

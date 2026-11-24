@@ -86,11 +86,13 @@ contract NameNFT is ERC721, ReentrancyGuard {
     uint256 constant GRACE_PERIOD = 90 days;
     uint256 constant MAX_SUBDOMAIN_DEPTH = 10;
     uint256 constant COIN_TYPE_ETH = 60;
-    uint256 constant FEE_LEN1 = 0.5 ether; // 1-byte labels
-    uint256 constant FEE_LEN2 = 0.1 ether; // 2-byte labels
-    uint256 constant FEE_LEN3 = 0.05 ether; // 3-byte labels
-    uint256 constant FEE_LEN4 = 0.01 ether; // 4-byte labels
-    uint256 constant DEFAULT_FEE = 0.0005 ether; // 5+ byte labels
+    // Fee tiers by label length in Unicode code points (upstream: in bytes). The 1- and
+    // 2-character tiers cannot be reached: a top-level label has at least 3 characters.
+    uint256 constant FEE_LEN1 = 0.5 ether; // 1-character labels
+    uint256 constant FEE_LEN2 = 0.1 ether; // 2-character labels
+    uint256 constant FEE_LEN3 = 0.05 ether; // 3-character labels
+    uint256 constant FEE_LEN4 = 0.01 ether; // 4-character labels
+    uint256 constant DEFAULT_FEE = 0.0005 ether; // 5+ character labels
     uint256 constant MAX_PREMIUM = 100 ether;
     uint256 constant PREMIUM_DECAY_PERIOD = 21 days;
 
@@ -328,9 +330,10 @@ contract NameNFT is ERC721, ReentrancyGuard {
         whenOpen
         returns (uint256 tokenId)
     {
-        uint256 fee = getFee(bytes(label).length);
         bytes memory normalized = _validateAndNormalize(bytes(label));
-        if (_isTooShort(normalized)) revert LabelTooShort();
+        uint256 length = _codePoints(normalized);
+        if (length < MIN_TOP_LEVEL_LENGTH) revert LabelTooShort();
+        uint256 fee = getFee(length);
 
         tokenId = uint256(keccak256(abi.encodePacked(BSO_NODE, keccak256(normalized))));
         uint256 premium = getPremium(tokenId);
@@ -434,7 +437,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
         if (parent != 0) {
             if (!_isActive(parent)) revert Expired();
             if (_getDepth(parent) >= MAX_SUBDOMAIN_DEPTH) revert TooDeep();
-        } else if (_isTooShort(normalized)) {
+        } else if (_codePoints(normalized) < MIN_TOP_LEVEL_LENGTH) {
             revert LabelTooShort();
         }
 
@@ -473,7 +476,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
         if (record.parent != 0) revert Unauthorized();
         if (block.timestamp > record.expiresAt + GRACE_PERIOD) revert Expired();
 
-        uint256 fee = getFee(bytes(record.label).length);
+        uint256 fee = getFee(_codePoints(bytes(record.label)));
         if (msg.value < fee) revert InsufficientFee();
 
         // Always extend from current expiry (ENS-style)
@@ -733,7 +736,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
         if (normalized[0] == 0x2d || normalized[b.length - 1] == 0x2d) return false;
 
         // Top-level minimum length, so that a client does not commit to a name it cannot reveal
-        if (parentId == 0 && _isTooShort(normalized)) return false;
+        if (parentId == 0 && _codePoints(normalized) < MIN_TOP_LEVEL_LENGTH) return false;
 
         bytes32 parentNode = parentId == 0 ? BSO_NODE : bytes32(parentId);
         uint256 tokenId = uint256(keccak256(abi.encodePacked(parentNode, keccak256(normalized))));
@@ -777,6 +780,8 @@ contract NameNFT is ERC721, ReentrancyGuard {
                             FEE MANAGEMENT
     //////////////////////////////////////////////////////////////*/
 
+    /// @notice The fee for registering or renewing a top-level label for 365 days.
+    /// @param length The label's length in Unicode code points, not in bytes.
     function getFee(uint256 length) public pure returns (uint256) {
         if (length == 1) return FEE_LEN1;
         if (length == 2) return FEE_LEN2;
@@ -938,17 +943,13 @@ contract NameNFT is ERC721, ReentrancyGuard {
         return result;
     }
 
-    /// @dev True if a validated label has fewer than MIN_TOP_LEVEL_LENGTH Unicode code points.
-    ///      Applies to top-level labels only. In valid UTF-8 every byte that is not a
+    /// @dev The number of Unicode code points in a validated label. It is the length that the
+    ///      top-level minimum and the fee go by. In valid UTF-8 every byte that is not a
     ///      continuation byte (10xxxxxx) starts one code point.
-    function _isTooShort(bytes memory b) internal pure returns (bool) {
-        uint256 count;
+    function _codePoints(bytes memory b) internal pure returns (uint256 count) {
         for (uint256 i; i < b.length; ++i) {
-            if (uint8(b[i]) & 0xC0 != 0x80) {
-                if (++count == MIN_TOP_LEVEL_LENGTH) return false;
-            }
+            if (uint8(b[i]) & 0xC0 != 0x80) ++count;
         }
-        return true;
     }
 
     function _toLowerSlice(bytes memory b, uint256 start, uint256 end)

@@ -26,9 +26,8 @@ contract MinLengthTest is Test {
         vm.prank(alice);
         nft.commit(commitment);
         vm.warp(block.timestamp + MIN_COMMITMENT_AGE);
-        uint256 fee = nft.getFee(bytes(label).length);
         vm.prank(alice);
-        id = nft.reveal{value: fee}(label, secret);
+        id = nft.reveal{value: 1 ether}(label, secret);
     }
 
     function _assertTooShort(string memory label) internal {
@@ -104,17 +103,6 @@ contract MinLengthTest is Test {
     function test_LongEnough_LongerNamesUnaffected() public {
         _assertLongEnough("alice");
         _assertLongEnough("relationship_advice");
-    }
-
-    /// The fee is still by bytes, as upstream: three CJK characters are 9 bytes.
-    function test_FeeIsStillByBytes() public {
-        uint256 before = alice.balance;
-        _reveal(unicode"中文字");
-        assertEq(before - alice.balance, 0.0005 ether);
-
-        before = alice.balance;
-        _reveal("xyz");
-        assertEq(before - alice.balance, 0.05 ether);
     }
 
     /*//////////////////////////////////////////////////////////////
