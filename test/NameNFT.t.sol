@@ -20,8 +20,8 @@ contract NameNFTTest is Test {
     uint256 public constant FEE_LEN2 = 0.1 ether;
     uint256 public constant FEE_LEN3 = 0.05 ether;
     uint256 public constant FEE_LEN4 = 0.01 ether;
-    bytes32 public constant GWEI_NODE =
-        0xcca9c7f2dbe2808af0de2982fc84314bfa68a82a6a60ad5cd757f91a233d7d7f;
+    bytes32 public constant BSO_NODE =
+        0xe07ef0fd54600878e8c5c0087ff379e0fb9e1c49dfcc763bdada48721f534a20;
 
     // Mirror private constants from contract for testing
     uint256 constant MAX_LABEL_LENGTH = 255;
@@ -57,8 +57,8 @@ contract NameNFTTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     function test_InitialState() public view {
-        assertEq(nft.name(), "Gwei Name Service");
-        assertEq(nft.symbol(), "GWEI");
+        assertEq(nft.name(), "Bitsocial Names");
+        assertEq(nft.symbol(), "BSONAME");
         assertEq(nft.getFee(5), DEFAULT_FEE);
     }
 
@@ -103,20 +103,20 @@ contract NameNFTTest is Test {
     }
 
     function test_Constants() public view {
-        // Only GWEI_NODE remains public for tooling compatibility
-        assertEq(nft.GWEI_NODE(), GWEI_NODE);
+        // Only BSO_NODE remains public for tooling compatibility
+        assertEq(nft.BSO_NODE(), BSO_NODE);
     }
 
-    function test_GWEI_NODE_Correctness() public pure {
-        // Verify GWEI_NODE is correctly computed as namehash("gwei")
-        // namehash("gwei") = keccak256(namehash("") ++ keccak256("gwei"))
+    function test_BSO_NODE_Correctness() public pure {
+        // Verify BSO_NODE is correctly computed as namehash("bso")
+        // namehash("bso") = keccak256(namehash("") ++ keccak256("bso"))
         // namehash("") = bytes32(0)
         bytes32 rootNode = bytes32(0);
-        bytes32 gweiLabelHash = keccak256("gwei");
-        bytes32 expectedGweiNode = keccak256(abi.encodePacked(rootNode, gweiLabelHash));
+        bytes32 bsoLabelHash = keccak256("bso");
+        bytes32 expectedBsoNode = keccak256(abi.encodePacked(rootNode, bsoLabelHash));
 
-        assertEq(GWEI_NODE, expectedGweiNode);
-        assertEq(GWEI_NODE, 0xcca9c7f2dbe2808af0de2982fc84314bfa68a82a6a60ad5cd757f91a233d7d7f);
+        assertEq(BSO_NODE, expectedBsoNode);
+        assertEq(BSO_NODE, 0xe07ef0fd54600878e8c5c0087ff379e0fb9e1c49dfcc763bdada48721f534a20);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -187,7 +187,7 @@ contract NameNFTTest is Test {
         uint256 tokenId = nft.reveal{value: DEFAULT_FEE}("alice", secret);
 
         assertEq(nft.ownerOf(tokenId), alice);
-        assertEq(nft.getFullName(tokenId), "alice.gwei");
+        assertEq(nft.getFullName(tokenId), "alice.bso");
     }
 
     function test_Reveal_RevertCommitmentNotFound() public {
@@ -361,30 +361,30 @@ contract NameNFTTest is Test {
                             NAMEHASH
     //////////////////////////////////////////////////////////////*/
 
-    function test_ComputeNamehash_EmptyReturnsGweiNode() public view {
-        assertEq(nft.computeNamehash(""), GWEI_NODE);
+    function test_ComputeNamehash_EmptyReturnsBsoNode() public view {
+        assertEq(nft.computeNamehash(""), BSO_NODE);
     }
 
-    function test_ComputeNamehash_JustGweiReturnsGweiNode() public view {
-        assertEq(nft.computeNamehash(".gwei"), GWEI_NODE);
+    function test_ComputeNamehash_JustBsoReturnsBsoNode() public view {
+        assertEq(nft.computeNamehash(".bso"), BSO_NODE);
     }
 
     function test_ComputeNamehash_SingleLabel() public view {
-        bytes32 expected = keccak256(abi.encodePacked(GWEI_NODE, keccak256("alice")));
+        bytes32 expected = keccak256(abi.encodePacked(BSO_NODE, keccak256("alice")));
         assertEq(nft.computeNamehash("alice"), expected);
-        assertEq(nft.computeNamehash("alice.gwei"), expected);
+        assertEq(nft.computeNamehash("alice.bso"), expected);
     }
 
     function test_ComputeNamehash_CaseInsensitive() public view {
         assertEq(nft.computeNamehash("alice"), nft.computeNamehash("ALICE"));
-        assertEq(nft.computeNamehash("alice.gwei"), nft.computeNamehash("ALICE.GWEI"));
+        assertEq(nft.computeNamehash("alice.bso"), nft.computeNamehash("ALICE.BSO"));
     }
 
     function test_ComputeNamehash_Subdomain() public view {
-        bytes32 aliceNode = keccak256(abi.encodePacked(GWEI_NODE, keccak256("alice")));
+        bytes32 aliceNode = keccak256(abi.encodePacked(BSO_NODE, keccak256("alice")));
         bytes32 expected = keccak256(abi.encodePacked(aliceNode, keccak256("sub")));
         assertEq(nft.computeNamehash("sub.alice"), expected);
-        assertEq(nft.computeNamehash("sub.alice.gwei"), expected);
+        assertEq(nft.computeNamehash("sub.alice.bso"), expected);
     }
 
     function test_ComputeNamehash_RevertEmptyLabel() public {
@@ -414,7 +414,7 @@ contract NameNFTTest is Test {
         uint256 subId = nft.registerSubdomain("sub", parentId);
 
         assertEq(nft.ownerOf(subId), alice);
-        assertEq(nft.getFullName(subId), "sub.alice.gwei");
+        assertEq(nft.getFullName(subId), "sub.alice.bso");
     }
 
     function test_RegisterSubdomainFor() public {
@@ -424,7 +424,7 @@ contract NameNFTTest is Test {
         uint256 subId = nft.registerSubdomainFor("sub", parentId, bob);
 
         assertEq(nft.ownerOf(subId), bob);
-        assertEq(nft.getFullName(subId), "sub.alice.gwei");
+        assertEq(nft.getFullName(subId), "sub.alice.bso");
     }
 
     function test_RegisterSubdomain_RevertNotParentOwner() public {
@@ -694,7 +694,7 @@ contract NameNFTTest is Test {
         vm.prank(alice);
         nft.setPrimaryName(tokenId);
 
-        assertEq(nft.reverseResolve(alice), "alice.gwei");
+        assertEq(nft.reverseResolve(alice), "alice.bso");
     }
 
     function test_ReverseResolve_EmptyWhenNotSet() public view {

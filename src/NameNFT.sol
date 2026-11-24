@@ -8,7 +8,7 @@ import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {ReentrancyGuard} from "soledge/utils/ReentrancyGuard.sol";
 
 /// @title NameNFT
-/// @notice ENS-style naming system for .gwei TLD with ERC721 ownership
+/// @notice ENS-style naming system for .bso TLD with ERC721 ownership
 /// @dev Token ID = uint256(namehash). ENS-compatible resolution.
 ///
 /// Unicode Support:
@@ -60,9 +60,9 @@ contract NameNFT is ERC721, ReentrancyGuard {
                                 CONSTANTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Namehash of "gwei" TLD - kept public for off-chain tooling
-    bytes32 public constant GWEI_NODE =
-        0xcca9c7f2dbe2808af0de2982fc84314bfa68a82a6a60ad5cd757f91a233d7d7f;
+    /// @dev Namehash of "bso" TLD - kept public for off-chain tooling
+    bytes32 public constant BSO_NODE =
+        0xe07ef0fd54600878e8c5c0087ff379e0fb9e1c49dfcc763bdada48721f534a20;
 
     uint256 constant MAX_LABEL_LENGTH = 255;
     uint256 constant MIN_LABEL_LENGTH = 1;
@@ -108,11 +108,11 @@ contract NameNFT is ERC721, ReentrancyGuard {
     //////////////////////////////////////////////////////////////*/
 
     function name() public pure override(ERC721) returns (string memory) {
-        return "Gwei Name Service";
+        return "Bitsocial Names";
     }
 
     function symbol() public pure override(ERC721) returns (string memory) {
-        return "GWEI";
+        return "BSONAME";
     }
 
     /// @dev Blocks transfers of inactive tokens, but allows mint (from==0) and burn (to==0)
@@ -161,7 +161,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
         }
 
         string memory fullName = _buildFullName(tokenId);
-        fullName = string.concat(fullName, ".gwei");
+        fullName = string.concat(fullName, ".bso");
         string memory displayName = bytes(fullName).length <= 20
             ? fullName
             : string.concat(_truncateUTF8(fullName, 17), "...");
@@ -189,7 +189,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
                     string.concat(
                         '{"name":"',
                         escapedName,
-                        '","description":"Gwei Name Service: ',
+                        '","description":"Bitsocial Names: ',
                         escapedName,
                         '","image":"data:image/svg+xml;base64,',
                         Base64.encode(bytes(_generateSVG(displayName))),
@@ -235,7 +235,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
         uint256 fee = getFee(bytes(label).length);
         bytes memory normalized = _validateAndNormalize(bytes(label));
 
-        tokenId = uint256(keccak256(abi.encodePacked(GWEI_NODE, keccak256(normalized))));
+        tokenId = uint256(keccak256(abi.encodePacked(BSO_NODE, keccak256(normalized))));
         uint256 premium = getPremium(tokenId);
         uint256 total = fee + premium;
 
@@ -348,7 +348,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
     function reverseResolve(address addr) public view returns (string memory) {
         uint256 tokenId = primaryName[addr];
         if (tokenId == 0 || !_isActive(tokenId) || resolve(tokenId) != addr) return "";
-        return string.concat(_buildFullName(tokenId), ".gwei");
+        return string.concat(_buildFullName(tokenId), ".bso");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -441,30 +441,29 @@ contract NameNFT is ERC721, ReentrancyGuard {
         return uint256(computeNamehash(fullName));
     }
 
-    /// @notice Compute namehash for a full name (e.g. "sub.name.gwei" or "name")
+    /// @notice Compute namehash for a full name (e.g. "sub.name.bso" or "name")
     /// @dev This function is intentionally permissive - it lowercases and hashes any input.
     ///      Registration enforces validation: valid UTF-8, no space/control chars/dot.
     ///      Use normalize() to check if a label is valid for registration.
     function computeNamehash(string calldata fullName) public pure returns (bytes32 node) {
         bytes memory b = bytes(fullName);
-        if (b.length == 0) return GWEI_NODE;
+        if (b.length == 0) return BSO_NODE;
 
         uint256 len = b.length;
 
-        // Strip .gwei suffix if present
+        // Strip .bso suffix if present
         if (
-            len >= 5 && b[len - 5] == 0x2e && (b[len - 4] == 0x67 || b[len - 4] == 0x47)
-                && (b[len - 3] == 0x77 || b[len - 3] == 0x57)
-                && (b[len - 2] == 0x65 || b[len - 2] == 0x45)
-                && (b[len - 1] == 0x69 || b[len - 1] == 0x49)
+            len >= 4 && b[len - 4] == 0x2e && (b[len - 3] == 0x62 || b[len - 3] == 0x42)
+                && (b[len - 2] == 0x73 || b[len - 2] == 0x53)
+                && (b[len - 1] == 0x6f || b[len - 1] == 0x4f)
         ) {
-            len -= 5;
+            len -= 4;
         }
 
-        if (len == 0) return GWEI_NODE;
+        if (len == 0) return BSO_NODE;
         if (b[0] == 0x2e || b[len - 1] == 0x2e) revert EmptyLabel();
 
-        node = GWEI_NODE;
+        node = BSO_NODE;
         uint256 labelEnd = len;
 
         for (uint256 i = len; i > 0; --i) {
@@ -545,7 +544,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
         // Hyphen rules
         if (normalized[0] == 0x2d || normalized[b.length - 1] == 0x2d) return false;
 
-        bytes32 parentNode = parentId == 0 ? GWEI_NODE : bytes32(parentId);
+        bytes32 parentNode = parentId == 0 ? BSO_NODE : bytes32(parentId);
         uint256 tokenId = uint256(keccak256(abi.encodePacked(parentNode, keccak256(normalized))));
 
         if (parentId != 0 && !_isActive(parentId)) return false;
@@ -564,7 +563,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
     function getFullName(uint256 tokenId) public view returns (string memory) {
         string memory baseName = _buildFullName(tokenId);
         if (bytes(baseName).length == 0) return "";
-        return string.concat(baseName, ".gwei");
+        return string.concat(baseName, ".bso");
     }
 
     /// @notice On-chain normalization (lowercases ASCII only)
@@ -617,7 +616,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
         returns (uint256 tokenId)
     {
         bytes memory normalized = _validateAndNormalize(bytes(label));
-        bytes32 parentNode = parentId == 0 ? GWEI_NODE : bytes32(parentId);
+        bytes32 parentNode = parentId == 0 ? BSO_NODE : bytes32(parentId);
         tokenId = uint256(keccak256(abi.encodePacked(parentNode, keccak256(normalized))));
 
         // Invariant: subdomain registration requires parent ownership
