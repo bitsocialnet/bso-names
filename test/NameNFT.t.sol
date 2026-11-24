@@ -94,11 +94,11 @@ contract NameNFTTest is Test {
         vm.prank(alice);
         uint256 tokenId = nft.reveal{value: FEE_LEN1}("a", secret);
         assertEq(nft.ownerOf(tokenId), alice);
-        assertEq(address(nft).balance, FEE_LEN1, "short-name fee burned into contract");
+        assertEq(address(nft).balance, FEE_LEN1, "short-name fee held by contract");
     }
 
     function test_NoOwnerInterface() public {
-        // The contract is ownerless: owner()/withdraw()/setDefaultFee() do not exist.
+        // The contract is ownerless: owner()/setDefaultFee() do not exist.
         // A low-level call to owner() (selector 0x8da5cb5b) must hit no function and revert.
         (bool ok,) = address(nft).call(abi.encodeWithSignature("owner()"));
         assertFalse(ok, "contract must not expose owner()");
@@ -891,17 +891,18 @@ contract NameNFTTest is Test {
         assertEq(nft.getFee(5), DEFAULT_FEE);
     }
 
-    function test_Fees_AccumulateAndAreLocked() public {
-        // The fee paid on registration stays in the contract...
+    function test_Fees_AccumulateUntilWithdrawn() public {
+        // Fork: the fee paid on registration stays in the contract...
         _registerName("alice", alice);
         assertEq(address(nft).balance, DEFAULT_FEE, "fee retained by contract");
 
-        // ...and there is no way to get it out: no owner, no withdraw function.
-        (bool ok,) = address(nft).call(abi.encodeWithSignature("withdraw()"));
-        assertFalse(ok, "withdraw() must not exist");
-
-        // Balance is untouched — effectively burned.
-        assertEq(address(nft).balance, DEFAULT_FEE, "fee still locked after withdraw attempt");
+        // ...until anyone calls withdraw(), which sends it to FEE_RECIPIENT (test/Withdraw.t.sol).
+        address recipient = nft.FEE_RECIPIENT();
+        uint256 before = recipient.balance;
+        vm.prank(carol);
+        nft.withdraw();
+        assertEq(address(nft).balance, 0, "balance withdrawn");
+        assertEq(recipient.balance, before + DEFAULT_FEE, "fee reaches the fee recipient");
     }
 
     function test_Fees_NoAdminSettersExist() public {

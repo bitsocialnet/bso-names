@@ -87,6 +87,10 @@ contract NameNFT is ERC721, ReentrancyGuard {
     uint256 constant MAX_PREMIUM = 100 ether;
     uint256 constant PREMIUM_DECAY_PERIOD = 21 days;
 
+    /// @dev The Safe multisig of the Bitsocial maintainers (BSIP-13). It receives the fees
+    ///      through `withdraw()` and has no other power over the registry than `sunset()`.
+    address public constant FEE_RECIPIENT = 0x442A54b2AFEe1db441Df5aA825059d663c96AA6E;
+
     /// @dev Delay between the last seed and the opening of public registration.
     uint256 public constant OPEN_DELAY = 1 hours;
     uint256 constant SEED_PERIOD = 7 days;
@@ -720,6 +724,15 @@ contract NameNFT is ERC721, ReentrancyGuard {
         if (length == 3) return FEE_LEN3;
         if (length == 4) return FEE_LEN4;
         return DEFAULT_FEE;
+    }
+
+    /// @notice Send the registry's whole ETH balance to `FEE_RECIPIENT`. Callable by anyone.
+    /// @dev The balance is the fees and premiums paid, plus any ETH sent by mistake with the
+    ///      payable ERC721 functions (`approve`, `transferFrom`, `safeTransferFrom`), which
+    ///      upstream leaves locked. Apart from the refunds of overpayment in `reveal` and
+    ///      `renew`, this is the only code path that sends ETH.
+    function withdraw() external nonReentrant {
+        SafeTransferLib.safeTransferETH(FEE_RECIPIENT, address(this).balance);
     }
 
     function getPremium(uint256 tokenId) public view returns (uint256) {
