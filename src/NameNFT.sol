@@ -4,11 +4,12 @@ pragma solidity ^0.8.30;
 import {Base64} from "solady/utils/Base64.sol";
 import {ERC721} from "solady/tokens/ERC721.sol";
 import {LibString} from "solady/utils/LibString.sol";
+import {MerkleProofLib} from "solady/utils/MerkleProofLib.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {ReentrancyGuard} from "soledge/utils/ReentrancyGuard.sol";
 
 /// @title NameNFT
-/// @notice ENS-style naming system for .gwei TLD with ERC721 ownership
+/// @notice ENS-style naming system for .bso TLD with ERC721 ownership
 /// @dev Token ID = uint256(namehash). ENS-compatible resolution.
 ///
 /// Unicode Support:
@@ -37,6 +38,12 @@ contract NameNFT is ERC721, ReentrancyGuard {
     error CommitmentTooOld();
     error AlreadyRegistered();
     error CommitmentNotFound();
+    error NotOpen();
+    error SeedingEnded();
+    error InvalidProof();
+    error Frozen();
+    error AlreadySunset();
+    error LabelTooShort();
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
@@ -56,29 +63,54 @@ contract NameNFT is ERC721, ReentrancyGuard {
     event AddressChanged(bytes32 indexed node, uint256 coinType, bytes addr);
     event TextChanged(bytes32 indexed node, string indexed key, string value);
 
+    /// @dev Emitted by the seed that brings `seededCount` to `SEED_COUNT`.
+    event RegistrationOpening(uint256 openAt);
+    /// @dev Emitted by `sunset()`. The registry is frozen from `sunsetAt` on.
+    event SunsetScheduled(uint256 sunsetAt);
+
     /*//////////////////////////////////////////////////////////////
                                 CONSTANTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Namehash of "gwei" TLD - kept public for off-chain tooling
-    bytes32 public constant GWEI_NODE =
-        0xcca9c7f2dbe2808af0de2982fc84314bfa68a82a6a60ad5cd757f91a233d7d7f;
+    /// @dev Namehash of "bso" TLD - kept public for off-chain tooling
+    bytes32 public constant BSO_NODE =
+        0xe07ef0fd54600878e8c5c0087ff379e0fb9e1c49dfcc763bdada48721f534a20;
 
     uint256 constant MAX_LABEL_LENGTH = 255;
     uint256 constant MIN_LABEL_LENGTH = 1;
+    /// @dev Minimum length of a top-level label, in Unicode code points (BSIP-13 change 5).
+    uint256 constant MIN_TOP_LEVEL_LENGTH = 3;
     uint256 constant MIN_COMMITMENT_AGE = 60;
     uint256 constant MAX_COMMITMENT_AGE = 86400;
     uint256 constant REGISTRATION_PERIOD = 365 days;
     uint256 constant GRACE_PERIOD = 90 days;
     uint256 constant MAX_SUBDOMAIN_DEPTH = 10;
     uint256 constant COIN_TYPE_ETH = 60;
-    uint256 constant FEE_LEN1 = 0.5 ether; // 1-byte labels
-    uint256 constant FEE_LEN2 = 0.1 ether; // 2-byte labels
-    uint256 constant FEE_LEN3 = 0.05 ether; // 3-byte labels
-    uint256 constant FEE_LEN4 = 0.01 ether; // 4-byte labels
-    uint256 constant DEFAULT_FEE = 0.0005 ether; // 5+ byte labels
+    // Fee tiers by label length in Unicode code points (upstream: in bytes). The 1- and
+    // 2-character tiers cannot be reached: a top-level label has at least 3 characters.
+    uint256 constant FEE_LEN1 = 0.5 ether; // 1-character labels
+    uint256 constant FEE_LEN2 = 0.1 ether; // 2-character labels
+    uint256 constant FEE_LEN3 = 0.05 ether; // 3-character labels
+    uint256 constant FEE_LEN4 = 0.01 ether; // 4-character labels
+    uint256 constant DEFAULT_FEE = 0.0005 ether; // 5+ character labels
     uint256 constant MAX_PREMIUM = 100 ether;
     uint256 constant PREMIUM_DECAY_PERIOD = 21 days;
+
+    /// @dev The Safe multisig of the Bitsocial maintainers (BSIP-13). It receives the fees
+    ///      through `withdraw()` and has no other power over the registry than `sunset()`.
+    address public constant FEE_RECIPIENT = 0x442A54b2AFEe1db441Df5aA825059d663c96AA6E;
+
+    /// @dev Delay between the last seed and the opening of public registration.
+    uint256 public constant OPEN_DELAY = 1 hours;
+    uint256 constant SEED_PERIOD = 7 days;
+    uint256 constant SUNSET_NOTICE = 30 days;
+
+    /// @dev Root of the OpenZeppelin StandardMerkleTree over the seed list (BSIP-13).
+    bytes32 public immutable SEED_ROOT;
+    /// @dev Number of entries in the seed list.
+    uint256 public immutable SEED_COUNT;
+    /// @dev Deployment time + 7 days. From here on `seed` and `seedBatch` revert.
+    uint256 public immutable SEED_END;
 
     /*//////////////////////////////////////////////////////////////
                                  STORAGE
@@ -103,16 +135,67 @@ contract NameNFT is ERC721, ReentrancyGuard {
     mapping(uint256 => mapping(uint256 => mapping(uint256 => bytes))) internal _coinAddr;
     mapping(uint256 => mapping(uint256 => mapping(string => string))) internal _text;
 
+    /// @dev Names registered by `seed` / `seedBatch`.
+    uint256 public seededCount;
+    /// @dev Set once, when `seededCount` reaches `SEED_COUNT`. Public registration opens at
+    ///      `openAt`, or at `SEED_END` if that comes first or the count is never reached.
+    uint256 public openAt;
+    /// @dev Set once, by `sunset()`. From `sunsetAt` on every state-changing function reverts,
+    ///      except `withdraw()`. Zero means no sunset is scheduled.
+    uint256 public sunsetAt;
+
+    struct SeedEntry {
+        string label;
+        uint256 parent;
+        address owner;
+        string record;
+        bytes32[] proof;
+    }
+
+    constructor(bytes32 seedRoot, uint256 seedCount) {
+        SEED_ROOT = seedRoot;
+        SEED_COUNT = seedCount;
+        SEED_END = block.timestamp + SEED_PERIOD;
+    }
+
+    /// @dev Reverts once the registry is frozen.
+    modifier notFrozen() {
+        _checkNotFrozen();
+        _;
+    }
+
+    function _checkNotFrozen() internal view {
+        uint256 frozenFrom = sunsetAt;
+        if (frozenFrom != 0 && block.timestamp >= frozenFrom) revert Frozen();
+    }
+
+    /// @notice Schedule the freeze of the registry, 30 days from now. Only `FEE_RECIPIENT`,
+    ///         only once. It cannot be cancelled or delayed.
+    function sunset() external {
+        if (msg.sender != FEE_RECIPIENT) revert Unauthorized();
+        if (sunsetAt != 0) revert AlreadySunset();
+        sunsetAt = block.timestamp + SUNSET_NOTICE;
+        emit SunsetScheduled(sunsetAt);
+    }
+
+    /// @dev Reverts until the opening of public registration.
+    modifier whenOpen() {
+        uint256 opening = openAt;
+        if (opening == 0 || opening > SEED_END) opening = SEED_END;
+        if (block.timestamp < opening) revert NotOpen();
+        _;
+    }
+
     /*//////////////////////////////////////////////////////////////
                              ERC721 METADATA
     //////////////////////////////////////////////////////////////*/
 
     function name() public pure override(ERC721) returns (string memory) {
-        return "Gwei Name Service";
+        return "Bitsocial Names";
     }
 
     function symbol() public pure override(ERC721) returns (string memory) {
-        return "GWEI";
+        return "BSONAME";
     }
 
     /// @dev Blocks transfers of inactive tokens, but allows mint (from==0) and burn (to==0)
@@ -124,8 +207,21 @@ contract NameNFT is ERC721, ReentrancyGuard {
     {
         // Allow mint and burn, block transfers of inactive tokens
         if (from != address(0) && to != address(0)) {
+            _checkNotFrozen();
             if (!_isActive(tokenId)) revert Expired();
         }
+    }
+
+    function approve(address account, uint256 id) public payable override(ERC721) notFrozen {
+        super.approve(account, id);
+    }
+
+    function setApprovalForAll(address operator, bool isApproved)
+        public
+        override(ERC721)
+        notFrozen
+    {
+        super.setApprovalForAll(operator, isApproved);
     }
 
     function tokenURI(uint256 tokenId) public view override(ERC721) returns (string memory) {
@@ -161,7 +257,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
         }
 
         string memory fullName = _buildFullName(tokenId);
-        fullName = string.concat(fullName, ".gwei");
+        fullName = string.concat(fullName, ".bso");
         string memory displayName = bytes(fullName).length <= 20
             ? fullName
             : string.concat(_truncateUTF8(fullName, 17), "...");
@@ -189,7 +285,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
                     string.concat(
                         '{"name":"',
                         escapedName,
-                        '","description":"Gwei Name Service: ',
+                        '","description":"Bitsocial Names: ',
                         escapedName,
                         '","image":"data:image/svg+xml;base64,',
                         Base64.encode(bytes(_generateSVG(displayName))),
@@ -215,7 +311,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
         return keccak256(abi.encode(normalized, owner, secret));
     }
 
-    function commit(bytes32 commitment) public {
+    function commit(bytes32 commitment) public notFrozen {
         if (
             commitments[commitment] != 0
                 && block.timestamp <= commitments[commitment] + MAX_COMMITMENT_AGE
@@ -230,12 +326,16 @@ contract NameNFT is ERC721, ReentrancyGuard {
         external
         payable
         nonReentrant
+        notFrozen
+        whenOpen
         returns (uint256 tokenId)
     {
-        uint256 fee = getFee(bytes(label).length);
         bytes memory normalized = _validateAndNormalize(bytes(label));
+        uint256 length = _codePoints(normalized);
+        if (length < MIN_TOP_LEVEL_LENGTH) revert LabelTooShort();
+        uint256 fee = getFee(length);
 
-        tokenId = uint256(keccak256(abi.encodePacked(GWEI_NODE, keccak256(normalized))));
+        tokenId = uint256(keccak256(abi.encodePacked(BSO_NODE, keccak256(normalized))));
         uint256 premium = getPremium(tokenId);
         uint256 total = fee + premium;
 
@@ -263,6 +363,8 @@ contract NameNFT is ERC721, ReentrancyGuard {
     function registerSubdomain(string calldata label, uint256 parentId)
         external
         nonReentrant
+        notFrozen
+        whenOpen
         returns (uint256)
     {
         if (!_isActive(parentId)) revert Expired();
@@ -273,6 +375,8 @@ contract NameNFT is ERC721, ReentrancyGuard {
     function registerSubdomainFor(string calldata label, uint256 parentId, address to)
         external
         nonReentrant
+        notFrozen
+        whenOpen
         returns (uint256)
     {
         if (!_isActive(parentId)) revert Expired();
@@ -281,16 +385,98 @@ contract NameNFT is ERC721, ReentrancyGuard {
     }
 
     /*//////////////////////////////////////////////////////////////
+                               SEEDING
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Register one entry of the seed list to its listed owner, free of charge.
+    /// @dev Callable by anyone before `SEED_END`. The leaf is the OpenZeppelin StandardMerkleTree
+    ///      leaf for `(label, parent, owner, record)`, hashed with the label exactly as supplied.
+    ///      `parent` is 0 for a top-level name, otherwise the parent's token ID.
+    function seed(
+        string calldata label,
+        uint256 parent,
+        address owner,
+        string calldata record,
+        bytes32[] calldata proof
+    ) external {
+        if (block.timestamp >= SEED_END) revert SeedingEnded();
+        if (!_seed(label, parent, owner, record, proof)) revert AlreadyRegistered();
+    }
+
+    /// @notice Seed several entries in order. An entry whose name already has a record is
+    ///         skipped, so an entry seeded by someone else cannot revert the batch.
+    /// @dev A parent must be seeded before its subdomains, in an earlier call or earlier in
+    ///      the same batch.
+    function seedBatch(SeedEntry[] calldata entries) external {
+        if (block.timestamp >= SEED_END) revert SeedingEnded();
+        for (uint256 i; i < entries.length; ++i) {
+            SeedEntry calldata e = entries[i];
+            _seed(e.label, e.parent, e.owner, e.record, e.proof);
+        }
+    }
+
+    /// @dev Its own mint path, not `_register`: no parent-ownership check, `_mint` rather than
+    ///      `_safeMint`. Returns false, changing nothing, if the name already has a record.
+    ///      It makes no external call, so `seed` and `seedBatch` need no reentrancy guard.
+    function _seed(
+        string calldata label,
+        uint256 parent,
+        address owner,
+        string calldata record,
+        bytes32[] calldata proof
+    ) internal returns (bool) {
+        bytes memory normalized = _validateAndNormalize(bytes(label));
+        bytes32 parentNode = parent == 0 ? BSO_NODE : bytes32(parent);
+        uint256 tokenId = uint256(keccak256(abi.encodePacked(parentNode, keccak256(normalized))));
+
+        if (_recordExists(tokenId)) return false;
+
+        bytes32 leaf = keccak256(bytes.concat(keccak256(abi.encode(label, parent, owner, record))));
+        if (!MerkleProofLib.verifyCalldata(proof, SEED_ROOT, leaf)) revert InvalidProof();
+
+        if (parent != 0) {
+            if (!_isActive(parent)) revert Expired();
+            if (_getDepth(parent) >= MAX_SUBDOMAIN_DEPTH) revert TooDeep();
+        } else if (_codePoints(normalized) < MIN_TOP_LEVEL_LENGTH) {
+            revert LabelTooShort();
+        }
+
+        records[tokenId] = NameRecord({
+            label: string(normalized),
+            parent: parent,
+            expiresAt: parent == 0 ? uint64(block.timestamp + REGISTRATION_PERIOD) : 0,
+            epoch: 1,
+            parentEpoch: parent == 0 ? 0 : records[parent].epoch
+        });
+
+        _mint(owner, tokenId);
+
+        emit NameRegistered(tokenId, string(normalized), owner, records[tokenId].expiresAt);
+        if (parent != 0) emit SubdomainRegistered(tokenId, parent, string(normalized));
+
+        if (bytes(record).length != 0) {
+            _text[tokenId][recordVersion[tokenId]]["bitsocial"] = record;
+            emit TextChanged(bytes32(tokenId), "bitsocial", record);
+        }
+
+        if (++seededCount == SEED_COUNT) {
+            openAt = block.timestamp + OPEN_DELAY;
+            emit RegistrationOpening(openAt);
+        }
+        return true;
+    }
+
+    /*//////////////////////////////////////////////////////////////
                                RENEWAL
     //////////////////////////////////////////////////////////////*/
 
-    function renew(uint256 tokenId) public payable nonReentrant {
+    function renew(uint256 tokenId) public payable nonReentrant notFrozen {
         NameRecord storage record = records[tokenId];
         if (bytes(record.label).length == 0) revert TokenDoesNotExist();
         if (record.parent != 0) revert Unauthorized();
         if (block.timestamp > record.expiresAt + GRACE_PERIOD) revert Expired();
 
-        uint256 fee = getFee(bytes(record.label).length);
+        uint256 fee = getFee(_codePoints(bytes(record.label)));
         if (msg.value < fee) revert InsufficientFee();
 
         // Always extend from current expiry (ENS-style)
@@ -322,14 +508,14 @@ contract NameNFT is ERC721, ReentrancyGuard {
                               RESOLUTION
     //////////////////////////////////////////////////////////////*/
 
-    function setAddr(uint256 tokenId, address addr) public {
+    function setAddr(uint256 tokenId, address addr) public notFrozen {
         if (!_isActive(tokenId)) revert Expired();
         if (ownerOf(tokenId) != msg.sender) revert Unauthorized();
         _resolvedAddress[tokenId][recordVersion[tokenId]] = addr;
         emit AddrChanged(bytes32(tokenId), addr);
     }
 
-    function setPrimaryName(uint256 tokenId) public {
+    function setPrimaryName(uint256 tokenId) public notFrozen {
         if (tokenId != 0) {
             if (!_isActive(tokenId)) revert Expired();
             address resolved = resolve(tokenId);
@@ -348,14 +534,14 @@ contract NameNFT is ERC721, ReentrancyGuard {
     function reverseResolve(address addr) public view returns (string memory) {
         uint256 tokenId = primaryName[addr];
         if (tokenId == 0 || !_isActive(tokenId) || resolve(tokenId) != addr) return "";
-        return string.concat(_buildFullName(tokenId), ".gwei");
+        return string.concat(_buildFullName(tokenId), ".bso");
     }
 
     /*//////////////////////////////////////////////////////////////
                          ENS-COMPATIBLE RESOLVER
     //////////////////////////////////////////////////////////////*/
 
-    function setContenthash(uint256 tokenId, bytes calldata hash) public {
+    function setContenthash(uint256 tokenId, bytes calldata hash) public notFrozen {
         if (!_isActive(tokenId)) revert Expired();
         if (ownerOf(tokenId) != msg.sender) revert Unauthorized();
         _contenthash[tokenId][recordVersion[tokenId]] = hash;
@@ -367,7 +553,10 @@ contract NameNFT is ERC721, ReentrancyGuard {
         return _contenthash[tokenId][recordVersion[tokenId]];
     }
 
-    function setAddrForCoin(uint256 tokenId, uint256 coinType, bytes calldata addr) public {
+    function setAddrForCoin(uint256 tokenId, uint256 coinType, bytes calldata addr)
+        public
+        notFrozen
+    {
         if (!_isActive(tokenId)) revert Expired();
         if (ownerOf(tokenId) != msg.sender) revert Unauthorized();
         _coinAddr[tokenId][recordVersion[tokenId]][coinType] = addr;
@@ -386,7 +575,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
         return _coinAddr[tokenId][v][coinType];
     }
 
-    function setText(uint256 tokenId, string calldata key, string calldata value) public {
+    function setText(uint256 tokenId, string calldata key, string calldata value) public notFrozen {
         if (!_isActive(tokenId)) revert Expired();
         if (ownerOf(tokenId) != msg.sender) revert Unauthorized();
         _text[tokenId][recordVersion[tokenId]][key] = value;
@@ -441,30 +630,29 @@ contract NameNFT is ERC721, ReentrancyGuard {
         return uint256(computeNamehash(fullName));
     }
 
-    /// @notice Compute namehash for a full name (e.g. "sub.name.gwei" or "name")
+    /// @notice Compute namehash for a full name (e.g. "sub.name.bso" or "name")
     /// @dev This function is intentionally permissive - it lowercases and hashes any input.
     ///      Registration enforces validation: valid UTF-8, no space/control chars/dot.
     ///      Use normalize() to check if a label is valid for registration.
     function computeNamehash(string calldata fullName) public pure returns (bytes32 node) {
         bytes memory b = bytes(fullName);
-        if (b.length == 0) return GWEI_NODE;
+        if (b.length == 0) return BSO_NODE;
 
         uint256 len = b.length;
 
-        // Strip .gwei suffix if present
+        // Strip .bso suffix if present
         if (
-            len >= 5 && b[len - 5] == 0x2e && (b[len - 4] == 0x67 || b[len - 4] == 0x47)
-                && (b[len - 3] == 0x77 || b[len - 3] == 0x57)
-                && (b[len - 2] == 0x65 || b[len - 2] == 0x45)
-                && (b[len - 1] == 0x69 || b[len - 1] == 0x49)
+            len >= 4 && b[len - 4] == 0x2e && (b[len - 3] == 0x62 || b[len - 3] == 0x42)
+                && (b[len - 2] == 0x73 || b[len - 2] == 0x53)
+                && (b[len - 1] == 0x6f || b[len - 1] == 0x4f)
         ) {
-            len -= 5;
+            len -= 4;
         }
 
-        if (len == 0) return GWEI_NODE;
+        if (len == 0) return BSO_NODE;
         if (b[0] == 0x2e || b[len - 1] == 0x2e) revert EmptyLabel();
 
-        node = GWEI_NODE;
+        node = BSO_NODE;
         uint256 labelEnd = len;
 
         for (uint256 i = len; i > 0; --i) {
@@ -484,6 +672,8 @@ contract NameNFT is ERC721, ReentrancyGuard {
     /// @dev For subdomains, returns false if subdomain exists and is active, even though
     ///      the parent owner can overwrite it. Parent owners should use registerSubdomain()
     ///      directly - it will succeed for reclaim even when isAvailable() returns false.
+    ///      It does not take the opening or the freeze into account: a label can be available
+    ///      while `reveal` still reverts with NotOpen or Frozen.
     function isAvailable(string calldata label, uint256 parentId) public view returns (bool) {
         bytes memory b = bytes(label);
         if (b.length < MIN_LABEL_LENGTH || b.length > MAX_LABEL_LENGTH) return false;
@@ -545,7 +735,10 @@ contract NameNFT is ERC721, ReentrancyGuard {
         // Hyphen rules
         if (normalized[0] == 0x2d || normalized[b.length - 1] == 0x2d) return false;
 
-        bytes32 parentNode = parentId == 0 ? GWEI_NODE : bytes32(parentId);
+        // Top-level minimum length, so that a client does not commit to a name it cannot reveal
+        if (parentId == 0 && _codePoints(normalized) < MIN_TOP_LEVEL_LENGTH) return false;
+
+        bytes32 parentNode = parentId == 0 ? BSO_NODE : bytes32(parentId);
         uint256 tokenId = uint256(keccak256(abi.encodePacked(parentNode, keccak256(normalized))));
 
         if (parentId != 0 && !_isActive(parentId)) return false;
@@ -564,7 +757,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
     function getFullName(uint256 tokenId) public view returns (string memory) {
         string memory baseName = _buildFullName(tokenId);
         if (bytes(baseName).length == 0) return "";
-        return string.concat(baseName, ".gwei");
+        return string.concat(baseName, ".bso");
     }
 
     /// @notice On-chain normalization (lowercases ASCII only)
@@ -587,12 +780,23 @@ contract NameNFT is ERC721, ReentrancyGuard {
                             FEE MANAGEMENT
     //////////////////////////////////////////////////////////////*/
 
+    /// @notice The fee for registering or renewing a top-level label for 365 days.
+    /// @param length The label's length in Unicode code points, not in bytes.
     function getFee(uint256 length) public pure returns (uint256) {
         if (length == 1) return FEE_LEN1;
         if (length == 2) return FEE_LEN2;
         if (length == 3) return FEE_LEN3;
         if (length == 4) return FEE_LEN4;
         return DEFAULT_FEE;
+    }
+
+    /// @notice Send the registry's whole ETH balance to `FEE_RECIPIENT`. Callable by anyone.
+    /// @dev The balance is the fees and premiums paid, plus any ETH sent by mistake with the
+    ///      payable ERC721 functions (`approve`, `transferFrom`, `safeTransferFrom`), which
+    ///      upstream leaves locked. Apart from the refunds of overpayment in `reveal` and
+    ///      `renew`, this is the only code path that sends ETH.
+    function withdraw() external nonReentrant {
+        SafeTransferLib.safeTransferETH(FEE_RECIPIENT, address(this).balance);
     }
 
     function getPremium(uint256 tokenId) public view returns (uint256) {
@@ -617,7 +821,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
         returns (uint256 tokenId)
     {
         bytes memory normalized = _validateAndNormalize(bytes(label));
-        bytes32 parentNode = parentId == 0 ? GWEI_NODE : bytes32(parentId);
+        bytes32 parentNode = parentId == 0 ? BSO_NODE : bytes32(parentId);
         tokenId = uint256(keccak256(abi.encodePacked(parentNode, keccak256(normalized))));
 
         // Invariant: subdomain registration requires parent ownership
@@ -737,6 +941,15 @@ contract NameNFT is ERC721, ReentrancyGuard {
         if (result[0] == 0x2d || result[b.length - 1] == 0x2d) revert InvalidName();
 
         return result;
+    }
+
+    /// @dev The number of Unicode code points in a validated label. It is the length that the
+    ///      top-level minimum and the fee go by. In valid UTF-8 every byte that is not a
+    ///      continuation byte (10xxxxxx) starts one code point.
+    function _codePoints(bytes memory b) internal pure returns (uint256 count) {
+        for (uint256 i; i < b.length; ++i) {
+            if (uint8(b[i]) & 0xC0 != 0x80) ++count;
+        }
     }
 
     function _toLowerSlice(bytes memory b, uint256 start, uint256 end)

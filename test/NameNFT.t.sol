@@ -20,8 +20,8 @@ contract NameNFTTest is Test {
     uint256 public constant FEE_LEN2 = 0.1 ether;
     uint256 public constant FEE_LEN3 = 0.05 ether;
     uint256 public constant FEE_LEN4 = 0.01 ether;
-    bytes32 public constant GWEI_NODE =
-        0xcca9c7f2dbe2808af0de2982fc84314bfa68a82a6a60ad5cd757f91a233d7d7f;
+    bytes32 public constant BSO_NODE =
+        0xe07ef0fd54600878e8c5c0087ff379e0fb9e1c49dfcc763bdada48721f534a20;
 
     // Mirror private constants from contract for testing
     uint256 constant MAX_LABEL_LENGTH = 255;
@@ -46,7 +46,9 @@ contract NameNFTTest is Test {
     event TextChanged(bytes32 indexed node, string indexed key, string value);
 
     function setUp() public {
-        nft = new NameNFT();
+        // Fork: no seed list, and public registration is open from SEED_END.
+        nft = new NameNFT(bytes32(0), 0);
+        vm.warp(nft.SEED_END());
         vm.deal(alice, 1000 ether);
         vm.deal(bob, 1000 ether);
         vm.deal(carol, 1000 ether);
@@ -57,8 +59,8 @@ contract NameNFTTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     function test_InitialState() public view {
-        assertEq(nft.name(), "Gwei Name Service");
-        assertEq(nft.symbol(), "GWEI");
+        assertEq(nft.name(), "Bitsocial Names");
+        assertEq(nft.symbol(), "BSONAME");
         assertEq(nft.getFee(5), DEFAULT_FEE);
     }
 
@@ -76,47 +78,48 @@ contract NameNFTTest is Test {
     }
 
     function test_ShortNameCostsMore() public {
-        // A 1-char name genuinely requires the 0.5 ETH tier, not the default.
+        // Fork: top-level labels have at least 3 characters, so the shortest tier in use is
+        // the 3-byte one. A 3-char name genuinely requires the 0.05 ETH tier, not the default.
         bytes32 secret = keccak256("s");
-        bytes32 commitment = nft.makeCommitment("a", alice, secret);
+        bytes32 commitment = nft.makeCommitment("abc", alice, secret);
         vm.prank(alice);
         nft.commit(commitment);
         vm.warp(block.timestamp + MIN_COMMITMENT_AGE + 1);
 
-        // Paying only the default tier reverts for a 1-byte label...
+        // Paying only the default tier reverts for a 3-byte label...
         vm.prank(alice);
         vm.expectRevert(NameNFT.InsufficientFee.selector);
-        nft.reveal{value: DEFAULT_FEE}("a", secret);
+        nft.reveal{value: DEFAULT_FEE}("abc", secret);
 
-        // ...paying the 1-byte tier succeeds.
+        // ...paying the 3-byte tier succeeds.
         vm.prank(alice);
-        uint256 tokenId = nft.reveal{value: FEE_LEN1}("a", secret);
+        uint256 tokenId = nft.reveal{value: FEE_LEN3}("abc", secret);
         assertEq(nft.ownerOf(tokenId), alice);
-        assertEq(address(nft).balance, FEE_LEN1, "short-name fee burned into contract");
+        assertEq(address(nft).balance, FEE_LEN3, "short-name fee held by contract");
     }
 
     function test_NoOwnerInterface() public {
-        // The contract is ownerless: owner()/withdraw()/setDefaultFee() do not exist.
+        // The contract is ownerless: owner()/setDefaultFee() do not exist.
         // A low-level call to owner() (selector 0x8da5cb5b) must hit no function and revert.
         (bool ok,) = address(nft).call(abi.encodeWithSignature("owner()"));
         assertFalse(ok, "contract must not expose owner()");
     }
 
     function test_Constants() public view {
-        // Only GWEI_NODE remains public for tooling compatibility
-        assertEq(nft.GWEI_NODE(), GWEI_NODE);
+        // Only BSO_NODE remains public for tooling compatibility
+        assertEq(nft.BSO_NODE(), BSO_NODE);
     }
 
-    function test_GWEI_NODE_Correctness() public pure {
-        // Verify GWEI_NODE is correctly computed as namehash("gwei")
-        // namehash("gwei") = keccak256(namehash("") ++ keccak256("gwei"))
+    function test_BSO_NODE_Correctness() public pure {
+        // Verify BSO_NODE is correctly computed as namehash("bso")
+        // namehash("bso") = keccak256(namehash("") ++ keccak256("bso"))
         // namehash("") = bytes32(0)
         bytes32 rootNode = bytes32(0);
-        bytes32 gweiLabelHash = keccak256("gwei");
-        bytes32 expectedGweiNode = keccak256(abi.encodePacked(rootNode, gweiLabelHash));
+        bytes32 bsoLabelHash = keccak256("bso");
+        bytes32 expectedBsoNode = keccak256(abi.encodePacked(rootNode, bsoLabelHash));
 
-        assertEq(GWEI_NODE, expectedGweiNode);
-        assertEq(GWEI_NODE, 0xcca9c7f2dbe2808af0de2982fc84314bfa68a82a6a60ad5cd757f91a233d7d7f);
+        assertEq(BSO_NODE, expectedBsoNode);
+        assertEq(BSO_NODE, 0xe07ef0fd54600878e8c5c0087ff379e0fb9e1c49dfcc763bdada48721f534a20);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -187,7 +190,7 @@ contract NameNFTTest is Test {
         uint256 tokenId = nft.reveal{value: DEFAULT_FEE}("alice", secret);
 
         assertEq(nft.ownerOf(tokenId), alice);
-        assertEq(nft.getFullName(tokenId), "alice.gwei");
+        assertEq(nft.getFullName(tokenId), "alice.bso");
     }
 
     function test_Reveal_RevertCommitmentNotFound() public {
@@ -361,30 +364,30 @@ contract NameNFTTest is Test {
                             NAMEHASH
     //////////////////////////////////////////////////////////////*/
 
-    function test_ComputeNamehash_EmptyReturnsGweiNode() public view {
-        assertEq(nft.computeNamehash(""), GWEI_NODE);
+    function test_ComputeNamehash_EmptyReturnsBsoNode() public view {
+        assertEq(nft.computeNamehash(""), BSO_NODE);
     }
 
-    function test_ComputeNamehash_JustGweiReturnsGweiNode() public view {
-        assertEq(nft.computeNamehash(".gwei"), GWEI_NODE);
+    function test_ComputeNamehash_JustBsoReturnsBsoNode() public view {
+        assertEq(nft.computeNamehash(".bso"), BSO_NODE);
     }
 
     function test_ComputeNamehash_SingleLabel() public view {
-        bytes32 expected = keccak256(abi.encodePacked(GWEI_NODE, keccak256("alice")));
+        bytes32 expected = keccak256(abi.encodePacked(BSO_NODE, keccak256("alice")));
         assertEq(nft.computeNamehash("alice"), expected);
-        assertEq(nft.computeNamehash("alice.gwei"), expected);
+        assertEq(nft.computeNamehash("alice.bso"), expected);
     }
 
     function test_ComputeNamehash_CaseInsensitive() public view {
         assertEq(nft.computeNamehash("alice"), nft.computeNamehash("ALICE"));
-        assertEq(nft.computeNamehash("alice.gwei"), nft.computeNamehash("ALICE.GWEI"));
+        assertEq(nft.computeNamehash("alice.bso"), nft.computeNamehash("ALICE.BSO"));
     }
 
     function test_ComputeNamehash_Subdomain() public view {
-        bytes32 aliceNode = keccak256(abi.encodePacked(GWEI_NODE, keccak256("alice")));
+        bytes32 aliceNode = keccak256(abi.encodePacked(BSO_NODE, keccak256("alice")));
         bytes32 expected = keccak256(abi.encodePacked(aliceNode, keccak256("sub")));
         assertEq(nft.computeNamehash("sub.alice"), expected);
-        assertEq(nft.computeNamehash("sub.alice.gwei"), expected);
+        assertEq(nft.computeNamehash("sub.alice.bso"), expected);
     }
 
     function test_ComputeNamehash_RevertEmptyLabel() public {
@@ -414,7 +417,7 @@ contract NameNFTTest is Test {
         uint256 subId = nft.registerSubdomain("sub", parentId);
 
         assertEq(nft.ownerOf(subId), alice);
-        assertEq(nft.getFullName(subId), "sub.alice.gwei");
+        assertEq(nft.getFullName(subId), "sub.alice.bso");
     }
 
     function test_RegisterSubdomainFor() public {
@@ -424,7 +427,7 @@ contract NameNFTTest is Test {
         uint256 subId = nft.registerSubdomainFor("sub", parentId, bob);
 
         assertEq(nft.ownerOf(subId), bob);
-        assertEq(nft.getFullName(subId), "sub.alice.gwei");
+        assertEq(nft.getFullName(subId), "sub.alice.bso");
     }
 
     function test_RegisterSubdomain_RevertNotParentOwner() public {
@@ -694,7 +697,7 @@ contract NameNFTTest is Test {
         vm.prank(alice);
         nft.setPrimaryName(tokenId);
 
-        assertEq(nft.reverseResolve(alice), "alice.gwei");
+        assertEq(nft.reverseResolve(alice), "alice.bso");
     }
 
     function test_ReverseResolve_EmptyWhenNotSet() public view {
@@ -889,17 +892,18 @@ contract NameNFTTest is Test {
         assertEq(nft.getFee(5), DEFAULT_FEE);
     }
 
-    function test_Fees_AccumulateAndAreLocked() public {
-        // The fee paid on registration stays in the contract...
+    function test_Fees_AccumulateUntilWithdrawn() public {
+        // Fork: the fee paid on registration stays in the contract...
         _registerName("alice", alice);
         assertEq(address(nft).balance, DEFAULT_FEE, "fee retained by contract");
 
-        // ...and there is no way to get it out: no owner, no withdraw function.
-        (bool ok,) = address(nft).call(abi.encodeWithSignature("withdraw()"));
-        assertFalse(ok, "withdraw() must not exist");
-
-        // Balance is untouched — effectively burned.
-        assertEq(address(nft).balance, DEFAULT_FEE, "fee still locked after withdraw attempt");
+        // ...until anyone calls withdraw(), which sends it to FEE_RECIPIENT (test/Withdraw.t.sol).
+        address recipient = nft.FEE_RECIPIENT();
+        uint256 before = recipient.balance;
+        vm.prank(carol);
+        nft.withdraw();
+        assertEq(address(nft).balance, 0, "balance withdrawn");
+        assertEq(recipient.balance, before + DEFAULT_FEE, "fee reaches the fee recipient");
     }
 
     function test_Fees_NoAdminSettersExist() public {
@@ -1037,6 +1041,8 @@ contract NameNFTTest is Test {
 
         // Try to normalize - skip if invalid
         try nft.normalize(label) returns (string memory normalized) {
+            // Fork: a top-level label shorter than 3 characters is valid but not registrable.
+            if (!nft.isAvailable(label, 0)) return;
             bytes32 secret = keccak256(abi.encodePacked(label, "secret"));
             bytes32 commitment = nft.makeCommitment(label, alice, secret);
 
@@ -1047,7 +1053,9 @@ contract NameNFTTest is Test {
 
             // Fee is length-based, so a short fuzzed label needs its tier, not the default.
             // Compute it before the prank so getFee() doesn't consume the prank meant for reveal.
-            uint256 fee = nft.getFee(bytes(label).length);
+            // Fork: the tier goes by characters, not bytes. Pay the top tier; reveal refunds
+            // the rest.
+            uint256 fee = FEE_LEN1;
             vm.prank(alice);
             uint256 tokenId = nft.reveal{value: fee}(label, secret);
 
@@ -1185,7 +1193,8 @@ contract NameNFTReentrancyTest is Test {
     uint256 constant MIN_COMMITMENT_AGE = 60;
 
     function setUp() public {
-        nft = new NameNFT();
+        nft = new NameNFT(bytes32(0), 0);
+        vm.warp(nft.SEED_END());
         attacker = new MaliciousReceiver(nft);
         vm.deal(address(attacker), 100 ether);
     }
