@@ -9,9 +9,9 @@ The registry is one contract, [`src/NameNFT.sol`](src/NameNFT.sol). It is a fork
 owner, admin, proxy, pause or upgrade path.
 
 **Status:** not deployed on Ethereum mainnet. A test deployment is on Sepolia at
-[`0x396AdD90157b398db69daDC40eCbFE0C9774B2C9`](https://sepolia.etherscan.io/address/0x396AdD90157b398db69daDC40eCbFE0C9774B2C9),
-seeded with the preliminary seed list of BSIP-13 (119 entries). Its source is not verified on
-Etherscan, and `FEE_RECIPIENT` has no code on Sepolia, so `sunset()` cannot be called there.
+[`0x0E1d1c4Df4221335b7E906c587f5025265De2042`](https://sepolia.etherscan.io/address/0x0E1d1c4Df4221335b7E906c587f5025265De2042#code),
+deployed from commit `b1c3c44`, verified on Etherscan, and seeded with the preliminary seed list of
+BSIP-13 (119 entries). `FEE_RECIPIENT` has no code on Sepolia, so `sunset()` cannot be called there.
 
 ## Changes from upstream
 
