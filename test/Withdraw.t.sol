@@ -25,6 +25,47 @@ contract ReenteringRecipient {
     }
 }
 
+/// @dev A registrant that calls withdraw() when it receives its refund, and again from the
+///      ERC721 receiver hook.
+contract WithdrawingRegistrant {
+    NameNFT public nft;
+    uint256 public attempts;
+    uint256 public blocked;
+
+    constructor(NameNFT _nft) {
+        nft = _nft;
+    }
+
+    function commit(bytes32 commitment) external {
+        nft.commit(commitment);
+    }
+
+    function reveal(string calldata label, bytes32 secret) external payable returns (uint256) {
+        return nft.reveal{value: msg.value}(label, secret);
+    }
+
+    function renew(uint256 id) external payable {
+        nft.renew{value: msg.value}(id);
+    }
+
+    function _tryWithdraw() internal {
+        ++attempts;
+        try nft.withdraw() {}
+        catch {
+            ++blocked;
+        }
+    }
+
+    function onERC721Received(address, address, uint256, bytes calldata) external returns (bytes4) {
+        _tryWithdraw();
+        return this.onERC721Received.selector;
+    }
+
+    receive() external payable {
+        _tryWithdraw();
+    }
+}
+
 /// @dev Rejects ETH.
 contract RejectingRecipient {
     receive() external payable {
@@ -168,6 +209,34 @@ contract WithdrawTest is Test {
         assertTrue(ReenteringRecipient(payable(FEE_RECIPIENT)).reentered());
         assertTrue(ReenteringRecipient(payable(FEE_RECIPIENT)).reentryFailed());
         assertEq(FEE_RECIPIENT.balance, DEFAULT_FEE);
+    }
+
+    /// withdraw() cannot run inside reveal or renew: not from the receiver hook of the mint and
+    /// not from the refund. The registration and the refund complete, and the fee stays.
+    function test_Withdraw_IsBlockedDuringRevealAndRenew() public {
+        WithdrawingRegistrant registrant = new WithdrawingRegistrant(nft);
+        vm.deal(address(registrant), 10 ether);
+
+        bytes32 secret = keccak256("s");
+        registrant.commit(nft.makeCommitment("carol", address(registrant), secret));
+        vm.warp(block.timestamp + MIN_COMMITMENT_AGE);
+
+        uint256 id = registrant.reveal{value: 1 ether}("carol", secret);
+        assertEq(nft.ownerOf(id), address(registrant));
+        assertEq(registrant.attempts(), 2, "receiver hook and refund");
+        assertEq(registrant.blocked(), 2);
+        assertEq(address(nft).balance, DEFAULT_FEE);
+        // It was sent 1 ether with the call and keeps all of it but the fee.
+        assertEq(address(registrant).balance, 11 ether - DEFAULT_FEE);
+        assertEq(FEE_RECIPIENT.balance, 0);
+
+        registrant.renew{value: 1 ether}(id);
+        assertEq(registrant.attempts(), 3);
+        assertEq(registrant.blocked(), 3);
+        assertEq(address(nft).balance, 2 * DEFAULT_FEE);
+
+        nft.withdraw();
+        assertEq(FEE_RECIPIENT.balance, 2 * DEFAULT_FEE);
     }
 
     /// If the recipient refuses ETH, withdraw reverts and the fees stay; nothing else is affected.

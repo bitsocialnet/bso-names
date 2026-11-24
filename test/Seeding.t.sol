@@ -644,6 +644,65 @@ contract SeedingTest is Test {
         nft.reveal{value: DEFAULT_FEE}("alice", secret);
     }
 
+    /// isAvailable does not know about the pause: before the opening it reports an unseeded
+    /// listed label as available although reveal reverts.
+    function test_Opening_IsAvailableIgnoresThePause() public {
+        NameNFT.SeedEntry[] memory es = _smallList();
+        NameNFT nft = _deploy(es);
+        assertTrue(nft.isAvailable("alice", 0));
+        _seed(nft, es[0]);
+        assertFalse(nft.isAvailable("alice", 0));
+    }
+
+    /// The subdomain functions cannot register a top-level name: parent 0 is never active.
+    function test_RegisterSubdomain_WithParentZeroCannotRegisterATopLevelName() public {
+        NameNFT nft = new NameNFT(bytes32(0), 0);
+        vm.warp(nft.SEED_END());
+
+        vm.startPrank(alice);
+        vm.expectRevert(NameNFT.Expired.selector);
+        nft.registerSubdomain("alice", 0);
+        vm.expectRevert(NameNFT.Expired.selector);
+        nft.registerSubdomainFor("ab", 0, alice);
+        vm.stopPrank();
+    }
+
+    /// openAt is set once, by the seed that reaches the count. With a SEED_COUNT lower than
+    /// the number of leaves (a deployment mistake) later seeds do not move it.
+    function test_Opening_OpenAtIsSetOnlyOnce() public {
+        NameNFT.SeedEntry[] memory es = _smallList();
+        bytes32[] memory tree = SeedTree.build(es);
+        NameNFT nft = new NameNFT(tree[0], 1);
+
+        _seed(nft, es[0]);
+        uint256 opened = nft.openAt();
+        assertEq(opened, block.timestamp + OPEN_DELAY);
+
+        vm.warp(block.timestamp + 100);
+        _seed(nft, es[1]);
+        assertEq(nft.seededCount(), 2);
+        assertEq(nft.openAt(), opened);
+    }
+
+    /// Two spellings of one label are two leaves but one name. Whoever seeds first decides the
+    /// owner and the other leaf can never be seeded, so the list must not contain such a pair
+    /// (the deploy script refuses it).
+    function test_Seed_TwoSpellingsOfOneLabelAreOneName() public {
+        NameNFT.SeedEntry[] memory es = new NameNFT.SeedEntry[](2);
+        es[0] = _entry("alice", 0, alice, "");
+        es[1] = _entry("Alice", 0, bob, "");
+        NameNFT nft = _deploy(es);
+
+        _seed(nft, es[1]);
+        assertEq(nft.ownerOf(_id("alice", 0)), bob);
+        (string memory label,,,,) = nft.records(_id("alice", 0));
+        assertEq(label, "alice");
+
+        vm.expectRevert(NameNFT.AlreadyRegistered.selector);
+        _seed(nft, es[0]);
+        assertEq(nft.openAt(), 0);
+    }
+
     /// Any subset of the list, in any order that puts parents first, seeds to the same state.
     function testFuzz_SeedThenBatch_AlwaysReachesTheCount(uint256 mask) public {
         NameNFT.SeedEntry[] memory es = _smallList();

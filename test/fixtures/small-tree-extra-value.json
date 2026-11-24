@@ -1,0 +1,10 @@
+{
+  "format": "standard-v1",
+  "leafEncoding": ["string", "uint256", "address", "string"],
+  "tree": ["0xa2242caeed21982fd1ce2e7d12d12f8afe2a9033d58afc12cdb838329839e930", "0x5228baf44746a64aa7aeffc4d056eb9f85e1960da9311b8c35daa0dc2ce6985f", "0x2c3113c244c674c1026994f584b83eff290b1c7d9580e11854d9eda78e83486f"],
+  "values": [
+    { "value": ["alice", "0", "0x00000000000000000000000000000000000A11cE", "12D3KooWAlice"], "treeIndex": 2 },
+    { "value": ["bobby", "0", "0x0000000000000000000000000000000000000B0b", ""], "treeIndex": 1 },
+    { "value": ["carol", "0", "0x0000000000000000000000000000000000000B0b", ""], "treeIndex": 1 }
+  ]
+}

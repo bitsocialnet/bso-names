@@ -395,7 +395,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
         address owner,
         string calldata record,
         bytes32[] calldata proof
-    ) external nonReentrant {
+    ) external {
         if (block.timestamp >= SEED_END) revert SeedingEnded();
         if (!_seed(label, parent, owner, record, proof)) revert AlreadyRegistered();
     }
@@ -404,7 +404,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
     ///         skipped, so an entry seeded by someone else cannot revert the batch.
     /// @dev A parent must be seeded before its subdomains, in an earlier call or earlier in
     ///      the same batch.
-    function seedBatch(SeedEntry[] calldata entries) external nonReentrant {
+    function seedBatch(SeedEntry[] calldata entries) external {
         if (block.timestamp >= SEED_END) revert SeedingEnded();
         for (uint256 i; i < entries.length; ++i) {
             SeedEntry calldata e = entries[i];
@@ -414,6 +414,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
 
     /// @dev Its own mint path, not `_register`: no parent-ownership check, `_mint` rather than
     ///      `_safeMint`. Returns false, changing nothing, if the name already has a record.
+    ///      It makes no external call, so `seed` and `seedBatch` need no reentrancy guard.
     function _seed(
         string calldata label,
         uint256 parent,
@@ -668,6 +669,8 @@ contract NameNFT is ERC721, ReentrancyGuard {
     /// @dev For subdomains, returns false if subdomain exists and is active, even though
     ///      the parent owner can overwrite it. Parent owners should use registerSubdomain()
     ///      directly - it will succeed for reclaim even when isAvailable() returns false.
+    ///      It does not take the opening or the freeze into account: a label can be available
+    ///      while `reveal` still reverts with NotOpen or Frozen.
     function isAvailable(string calldata label, uint256 parentId) public view returns (bool) {
         bytes memory b = bytes(label);
         if (b.length < MIN_LABEL_LENGTH || b.length > MAX_LABEL_LENGTH) return false;

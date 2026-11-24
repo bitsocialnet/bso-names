@@ -22,16 +22,39 @@ library SeedTree {
         root = tree[0];
 
         uint256 n = (tree.length + 1) / 2;
+        require(tree.length == 2 * n - 1, "seed tree: tree has an even number of nodes");
+        require(
+            vm.parseJsonKeys(json, ".").length == 4 && !vm.keyExistsJson(json, _at(n)),
+            "seed tree: values does not have one entry per leaf"
+        );
         entries = new NameNFT.SeedEntry[](n);
         for (uint256 i; i < n; ++i) {
-            string memory at = string.concat(".values[", vm.toString(i), "]");
+            string memory at = _at(i);
             entries[i].label = vm.parseJsonString(json, string.concat(at, ".value[0]"));
             entries[i].parent = vm.parseJsonUint(json, string.concat(at, ".value[1]"));
             entries[i].owner = vm.parseJsonAddress(json, string.concat(at, ".value[2]"));
             entries[i].record = vm.parseJsonString(json, string.concat(at, ".value[3]"));
-            entries[i].proof =
-                proofAt(tree, vm.parseJsonUint(json, string.concat(at, ".treeIndex")));
+            uint256 treeIndex = vm.parseJsonUint(json, string.concat(at, ".treeIndex"));
+            require(tree[treeIndex] == leaf(entries[i]), "seed tree: a value is not at its leaf");
+            entries[i].proof = proofAt(tree, treeIndex);
         }
+
+        // The file's tree must be the tree of its values, up to the root.
+        NameNFT.SeedEntry[] memory copy = new NameNFT.SeedEntry[](n);
+        for (uint256 i; i < n; ++i) {
+            copy[i] = NameNFT.SeedEntry(
+                entries[i].label,
+                entries[i].parent,
+                entries[i].owner,
+                entries[i].record,
+                new bytes32[](0)
+            );
+        }
+        require(build(copy)[0] == root, "seed tree: root is not the root of the values");
+    }
+
+    function _at(uint256 i) private pure returns (string memory) {
+        return string.concat(".values[", vm.toString(i), "]");
     }
 
     /// @dev Build a tree over `entries` the way `StandardMerkleTree.of` does, and fill in each

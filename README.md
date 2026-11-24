@@ -68,6 +68,8 @@ forge build --sizes   # NameNFT must stay under 24,576 bytes
 | `test/Withdraw.t.sol` | `withdraw()`. |
 | `test/Sunset.t.sol` | `sunset()` and the freeze. |
 | `test/MinLength.t.sol` | The minimum length. |
+| `test/Tld.t.sol` | The `.bso` root, names and `tokenURI`. |
+| `test/Scripts.t.sol` | The checks the deploy script makes on the seed tree file. |
 
 `test/fixtures/seed-tree.json` is a copy of `assets/bsip-13/seed-tree.json` from the
 [BSIPs repository](https://github.com/bitsocialnet/BSIPs/tree/master/assets/bsip-13).
@@ -80,7 +82,8 @@ The scripts read the seed tree, an OpenZeppelin `StandardMerkleTree` dump, from 
 ```bash
 export SEED_TREE=path/to/seed-tree.json
 
-# 1. Deploy. SEED_ROOT and SEED_COUNT come from the tree.
+# 1. Deploy. SEED_ROOT and SEED_COUNT come from the tree. The script first checks the file and
+#    seeds every entry into a throwaway registry, and refuses to deploy if any entry fails.
 forge script script/Deploy.s.sol:Deploy --rpc-url <rpc> --account <keystore> --broadcast --verify
 
 # 2. Seed every entry, 60 per transaction. Safe to run again: seeded entries are skipped.
@@ -92,6 +95,11 @@ forge script script/Deploy.s.sol:CheckSeeded --rpc-url <rpc>
 ```
 
 Public registration opens one hour after the last entry is seeded.
+
+## Review
+
+[`audit/bso-fork.md`](audit/bso-fork.md) records the Slither run and the review of the fork's changes.
+The other files in `audit/` are upstream's audits.
 
 ## License
 
