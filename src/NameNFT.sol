@@ -43,6 +43,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
     error InvalidProof();
     error Frozen();
     error AlreadySunset();
+    error LabelTooShort();
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
@@ -77,6 +78,8 @@ contract NameNFT is ERC721, ReentrancyGuard {
 
     uint256 constant MAX_LABEL_LENGTH = 255;
     uint256 constant MIN_LABEL_LENGTH = 1;
+    /// @dev Minimum length of a top-level label, in Unicode code points (BSIP-13 change 5).
+    uint256 constant MIN_TOP_LEVEL_LENGTH = 3;
     uint256 constant MIN_COMMITMENT_AGE = 60;
     uint256 constant MAX_COMMITMENT_AGE = 86400;
     uint256 constant REGISTRATION_PERIOD = 365 days;
@@ -327,6 +330,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
     {
         uint256 fee = getFee(bytes(label).length);
         bytes memory normalized = _validateAndNormalize(bytes(label));
+        if (_isTooShort(normalized)) revert LabelTooShort();
 
         tokenId = uint256(keccak256(abi.encodePacked(BSO_NODE, keccak256(normalized))));
         uint256 premium = getPremium(tokenId);
@@ -429,6 +433,8 @@ contract NameNFT is ERC721, ReentrancyGuard {
         if (parent != 0) {
             if (!_isActive(parent)) revert Expired();
             if (_getDepth(parent) >= MAX_SUBDOMAIN_DEPTH) revert TooDeep();
+        } else if (_isTooShort(normalized)) {
+            revert LabelTooShort();
         }
 
         records[tokenId] = NameRecord({
@@ -565,10 +571,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
         return _coinAddr[tokenId][v][coinType];
     }
 
-    function setText(uint256 tokenId, string calldata key, string calldata value)
-        public
-        notFrozen
-    {
+    function setText(uint256 tokenId, string calldata key, string calldata value) public notFrozen {
         if (!_isActive(tokenId)) revert Expired();
         if (ownerOf(tokenId) != msg.sender) revert Unauthorized();
         _text[tokenId][recordVersion[tokenId]][key] = value;
@@ -725,6 +728,9 @@ contract NameNFT is ERC721, ReentrancyGuard {
 
         // Hyphen rules
         if (normalized[0] == 0x2d || normalized[b.length - 1] == 0x2d) return false;
+
+        // Top-level minimum length, so that a client does not commit to a name it cannot reveal
+        if (parentId == 0 && _isTooShort(normalized)) return false;
 
         bytes32 parentNode = parentId == 0 ? BSO_NODE : bytes32(parentId);
         uint256 tokenId = uint256(keccak256(abi.encodePacked(parentNode, keccak256(normalized))));
@@ -927,6 +933,19 @@ contract NameNFT is ERC721, ReentrancyGuard {
         if (result[0] == 0x2d || result[b.length - 1] == 0x2d) revert InvalidName();
 
         return result;
+    }
+
+    /// @dev True if a validated label has fewer than MIN_TOP_LEVEL_LENGTH Unicode code points.
+    ///      Applies to top-level labels only. In valid UTF-8 every byte that is not a
+    ///      continuation byte (10xxxxxx) starts one code point.
+    function _isTooShort(bytes memory b) internal pure returns (bool) {
+        uint256 count;
+        for (uint256 i; i < b.length; ++i) {
+            if (uint8(b[i]) & 0xC0 != 0x80) {
+                if (++count == MIN_TOP_LEVEL_LENGTH) return false;
+            }
+        }
+        return true;
     }
 
     function _toLowerSlice(bytes memory b, uint256 start, uint256 end)

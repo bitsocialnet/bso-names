@@ -78,23 +78,24 @@ contract NameNFTTest is Test {
     }
 
     function test_ShortNameCostsMore() public {
-        // A 1-char name genuinely requires the 0.5 ETH tier, not the default.
+        // Fork: top-level labels have at least 3 characters, so the shortest tier in use is
+        // the 3-byte one. A 3-char name genuinely requires the 0.05 ETH tier, not the default.
         bytes32 secret = keccak256("s");
-        bytes32 commitment = nft.makeCommitment("a", alice, secret);
+        bytes32 commitment = nft.makeCommitment("abc", alice, secret);
         vm.prank(alice);
         nft.commit(commitment);
         vm.warp(block.timestamp + MIN_COMMITMENT_AGE + 1);
 
-        // Paying only the default tier reverts for a 1-byte label...
+        // Paying only the default tier reverts for a 3-byte label...
         vm.prank(alice);
         vm.expectRevert(NameNFT.InsufficientFee.selector);
-        nft.reveal{value: DEFAULT_FEE}("a", secret);
+        nft.reveal{value: DEFAULT_FEE}("abc", secret);
 
-        // ...paying the 1-byte tier succeeds.
+        // ...paying the 3-byte tier succeeds.
         vm.prank(alice);
-        uint256 tokenId = nft.reveal{value: FEE_LEN1}("a", secret);
+        uint256 tokenId = nft.reveal{value: FEE_LEN3}("abc", secret);
         assertEq(nft.ownerOf(tokenId), alice);
-        assertEq(address(nft).balance, FEE_LEN1, "short-name fee held by contract");
+        assertEq(address(nft).balance, FEE_LEN3, "short-name fee held by contract");
     }
 
     function test_NoOwnerInterface() public {
@@ -1040,6 +1041,8 @@ contract NameNFTTest is Test {
 
         // Try to normalize - skip if invalid
         try nft.normalize(label) returns (string memory normalized) {
+            // Fork: a top-level label shorter than 3 characters is valid but not registrable.
+            if (!nft.isAvailable(label, 0)) return;
             bytes32 secret = keccak256(abi.encodePacked(label, "secret"));
             bytes32 commitment = nft.makeCommitment(label, alice, secret);
 
