@@ -96,6 +96,14 @@ forge script script/Deploy.s.sol:CheckSeeded --rpc-url <rpc>
 
 Public registration opens one hour after the last entry is seeded.
 
+`forge script` sets each transaction's gas limit from its own simulation. Sepolia (November 2026)
+charges several times more gas for creating code and storage than Foundry v1.5.1 simulates: there the
+deployment used 36.1M gas, not the 5.1M simulated, and a batch of 60 entries about 38M, not 9.1M.
+On such a network compare with the node's `eth_estimateGas` and raise the limit with
+`--gas-estimate-multiplier` (760 for `Deploy` and 440 for `Seed` worked on Sepolia). A transaction
+that runs out of gas changes nothing and can be sent again. Ethereum mainnet still charged the
+simulated amounts when this was written.
+
 ## Review
 
 [`audit/bso-fork.md`](audit/bso-fork.md) records the Slither run and the review of the fork's changes.

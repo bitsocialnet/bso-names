@@ -21,8 +21,9 @@ abstract contract SeedScript is Script {
             );
     }
 
-    function _batchSize() internal view returns (uint256) {
-        return vm.envOr("SEED_BATCH", uint256(60));
+    function _batchSize() internal view returns (uint256 size) {
+        size = vm.envOr("SEED_BATCH", uint256(60));
+        require(size != 0, "SEED_BATCH must be at least 1");
     }
 
     function _seedAll(NameNFT nft, NameNFT.SeedEntry[] memory entries) internal {
