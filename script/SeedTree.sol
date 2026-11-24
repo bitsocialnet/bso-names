@@ -2,7 +2,7 @@
 pragma solidity ^0.8.30;
 
 import {Vm} from "forge-std/Vm.sol";
-import {NameNFT} from "../../src/NameNFT.sol";
+import {NameNFT} from "../src/NameNFT.sol";
 
 /// @dev Reads and builds OpenZeppelin `StandardMerkleTree` dumps ("standard-v1") for the seed
 ///      list of BSIP-13, with leaf encoding (string label, uint256 parent, address owner,

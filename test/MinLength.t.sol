@@ -3,7 +3,7 @@ pragma solidity ^0.8.30;
 
 import {Test} from "forge-std/Test.sol";
 import {NameNFT} from "../src/NameNFT.sol";
-import {SeedTree} from "./utils/SeedTree.sol";
+import {SeedTree} from "../script/SeedTree.sol";
 
 /// @notice BSIP-13 change 5: a top-level label has at least 3 Unicode code points.
 contract MinLengthTest is Test {

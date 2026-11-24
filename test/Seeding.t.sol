@@ -3,7 +3,7 @@ pragma solidity ^0.8.30;
 
 import {Test} from "forge-std/Test.sol";
 import {NameNFT} from "../src/NameNFT.sol";
-import {SeedTree} from "./utils/SeedTree.sol";
+import {SeedTree} from "../script/SeedTree.sol";
 
 /// @dev Has no `onERC721Received`, so `_safeMint` to it would revert.
 contract NoReceiverHook {}
