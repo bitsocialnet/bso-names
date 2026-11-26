@@ -44,5 +44,20 @@ Noted, with no change:
 ## After the review
 
 The fee by characters (`_codePoints` passed to `getFee` in `reveal` and `renew`, see the README) was
-added after both reviews above, so neither covers it. It is covered by `test/Fees.t.sol`. The runtime bytecode is now 22,987 bytes, 1,589 under
-the limit of 24,576.
+added after both reviews above, so neither covers it. It is covered by `test/Fees.t.sol`. The runtime bytecode was then 22,987 bytes.
+
+## AuditAgent scan
+
+Nethermind's AuditAgent scanned `src/NameNFT.sol` at `acc5625` on 25 November 2026 (scan
+`2d7891d3-7432-48fa-ba7a-1b189a3eaa08`), with BSIP-13, the README and this directory as context. It
+is an automated scan, not an external audit. It reported nothing in the fork's changes and three
+findings in upstream's code ([#3](https://github.com/bitsocialnet/bso-names/issues/3)):
+
+| Finding | Severity | Resolution |
+| --- | --- | --- |
+| `setAddr` and `setAddrForCoin` with coin type 60 wrote separate slots, and the multicoin getters preferred the second. A seller's coin-60 address outlived the buyer's `setAddr`, and the slot took values of any length. | Medium | One slot. Coin type 60 takes 20 bytes or none, and either setter emits both events. Upstream had a test recording the old behaviour; it is replaced in `test/NameNFT.t.sol`. |
+| `tokenURI` compares a subdomain's `parentEpoch` with its immediate parent only, so a subdomain two or more levels under a replaced name is labelled `[Expired]`, not `[Invalid]`. | Low | No change. Metadata only: resolution, transfers and permissions walk the whole chain. |
+| `TextChanged` had no plaintext key and shared its topic with the EIP-634 event, whose third field is the key. | Info | Replaced by ENS's `ITextResolver` event. |
+
+Neither fix has been reviewed by anyone but its author and the pull request's reviewers. The
+runtime bytecode is now 23,219 bytes, 1,357 under the limit of 24,576.
