@@ -32,8 +32,21 @@ prices do. Upstream goes by UTF-8 bytes, so that `日本語` (9 bytes) costs the
 costs 0.05 ETH; here both cost 0.05 ETH. `reveal` and `renew` pass the code-point count to `getFee`,
 whose tiers and amounts are upstream's.
 
-Everything else is upstream's: commit-reveal, expiry, grace period and premium, subdomains, records,
-and label validation.
+Two changes to the resolver follow from an AuditAgent scan
+([#3](https://github.com/bitsocialnet/bso-names/issues/3)) and are not in the BSIP's text either:
+
+- A name has one ETH address. Upstream keeps `setAddr` and `setAddrForCoin` with coin type 60 in
+  separate slots, and the `addr(…, 60)` getters prefer the second, so a seller's coin-60 address
+  outlives the buyer's `setAddr`. Here both setters write the same slot, coin type 60 accepts only
+  20 bytes or empty bytes (`InvalidLength` otherwise), and either setter emits both `AddrChanged`
+  and `AddressChanged`.
+- `TextChanged` is ENS's `ITextResolver` event,
+  `TextChanged(bytes32 indexed node, string indexed indexedKey, string key, string value)`.
+  Upstream's has no plaintext key and shares its topic with the older EIP-634 event, whose third
+  field is the key, not the value.
+
+Everything else is upstream's: commit-reveal, expiry, grace period and premium, subdomains, the
+other records, and label validation.
 
 ### Details the BSIP leaves to the implementation
 
