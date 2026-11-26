@@ -61,7 +61,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
     event AddrChanged(bytes32 indexed node, address addr);
     event ContenthashChanged(bytes32 indexed node, bytes contenthash);
     event AddressChanged(bytes32 indexed node, uint256 coinType, bytes addr);
-    event TextChanged(bytes32 indexed node, string indexed key, string value);
+    event TextChanged(bytes32 indexed node, string indexed indexedKey, string key, string value);
 
     /// @dev Emitted by the seed that brings `seededCount` to `SEED_COUNT`.
     event RegistrationOpening(uint256 openAt);
@@ -456,7 +456,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
 
         if (bytes(record).length != 0) {
             _text[tokenId][recordVersion[tokenId]]["bitsocial"] = record;
-            emit TextChanged(bytes32(tokenId), "bitsocial", record);
+            emit TextChanged(bytes32(tokenId), "bitsocial", "bitsocial", record);
         }
 
         if (++seededCount == SEED_COUNT) {
@@ -511,8 +511,17 @@ contract NameNFT is ERC721, ReentrancyGuard {
     function setAddr(uint256 tokenId, address addr) public notFrozen {
         if (!_isActive(tokenId)) revert Expired();
         if (ownerOf(tokenId) != msg.sender) revert Unauthorized();
+        _setEthAddr(tokenId, addr);
+    }
+
+    /// @dev The one place a name's ETH address is stored. `setAddr` and `setAddrForCoin` with coin
+    ///      type 60 both write it, so `resolve` and both `addr` overloads always agree.
+    function _setEthAddr(uint256 tokenId, address addr) internal {
         _resolvedAddress[tokenId][recordVersion[tokenId]] = addr;
         emit AddrChanged(bytes32(tokenId), addr);
+        emit AddressChanged(
+            bytes32(tokenId), COIN_TYPE_ETH, addr == address(0) ? bytes("") : abi.encodePacked(addr)
+        );
     }
 
     function setPrimaryName(uint256 tokenId) public notFrozen {
@@ -559,27 +568,28 @@ contract NameNFT is ERC721, ReentrancyGuard {
     {
         if (!_isActive(tokenId)) revert Expired();
         if (ownerOf(tokenId) != msg.sender) revert Unauthorized();
+        if (coinType == COIN_TYPE_ETH) {
+            // 20 bytes set the address, empty bytes clear it. Any other length is not an address.
+            if (addr.length != 20 && addr.length != 0) revert InvalidLength();
+            _setEthAddr(tokenId, addr.length == 20 ? address(bytes20(addr)) : address(0));
+            return;
+        }
         _coinAddr[tokenId][recordVersion[tokenId]][coinType] = addr;
         emit AddressChanged(bytes32(tokenId), coinType, addr);
     }
 
     function addr(uint256 tokenId, uint256 coinType) public view returns (bytes memory) {
         if (!_isActive(tokenId)) return "";
-        uint256 v = recordVersion[tokenId];
-        if (coinType == COIN_TYPE_ETH) {
-            bytes memory a = _coinAddr[tokenId][v][COIN_TYPE_ETH];
-            if (a.length > 0) return a;
-            address resolved = resolve(tokenId);
-            if (resolved != address(0)) return abi.encodePacked(resolved);
-        }
-        return _coinAddr[tokenId][v][coinType];
+        // Coin type 60 has no record of its own: it is whatever `resolve` returns.
+        if (coinType == COIN_TYPE_ETH) return abi.encodePacked(resolve(tokenId));
+        return _coinAddr[tokenId][recordVersion[tokenId]][coinType];
     }
 
     function setText(uint256 tokenId, string calldata key, string calldata value) public notFrozen {
         if (!_isActive(tokenId)) revert Expired();
         if (ownerOf(tokenId) != msg.sender) revert Unauthorized();
         _text[tokenId][recordVersion[tokenId]][key] = value;
-        emit TextChanged(bytes32(tokenId), key, value);
+        emit TextChanged(bytes32(tokenId), key, key, value);
     }
 
     function text(uint256 tokenId, string calldata key) public view returns (string memory) {
@@ -593,16 +603,7 @@ contract NameNFT is ERC721, ReentrancyGuard {
     }
 
     function addr(bytes32 node, uint256 coinType) public view returns (bytes memory) {
-        uint256 tokenId = uint256(node);
-        if (!_isActive(tokenId)) return "";
-        uint256 v = recordVersion[tokenId];
-        if (coinType == COIN_TYPE_ETH) {
-            bytes memory a = _coinAddr[tokenId][v][COIN_TYPE_ETH];
-            if (a.length > 0) return a;
-            address resolved = resolve(tokenId);
-            if (resolved != address(0)) return abi.encodePacked(resolved);
-        }
-        return _coinAddr[tokenId][v][coinType];
+        return addr(uint256(node), coinType);
     }
 
     function text(bytes32 node, string calldata key) public view returns (string memory) {

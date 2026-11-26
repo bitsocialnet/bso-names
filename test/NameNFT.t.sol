@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, Vm} from "forge-std/Test.sol";
 import {NameNFT} from "../src/NameNFT.sol";
 import {ERC721} from "solady/tokens/ERC721.sol";
 
@@ -42,8 +42,9 @@ contract NameNFTTest is Test {
     event PrimaryNameSet(address indexed addr, uint256 indexed tokenId);
     event Committed(bytes32 indexed commitment, address indexed committer);
     event AddrChanged(bytes32 indexed node, address addr);
+    event AddressChanged(bytes32 indexed node, uint256 coinType, bytes addr);
     event ContenthashChanged(bytes32 indexed node, bytes contenthash);
-    event TextChanged(bytes32 indexed node, string indexed key, string value);
+    event TextChanged(bytes32 indexed node, string indexed indexedKey, string key, string value);
 
     function setUp() public {
         // Fork: no seed list, and public registration is open from SEED_END.
@@ -742,25 +743,100 @@ contract NameNFTTest is Test {
         assertEq(result, abi.encodePacked(alice));
     }
 
-    // The coin-60 record is separate from setAddr and survives a transfer, so a seller's coin-60
-    // address outlives the buyer's setAddr. The dapp clears it with empty bytes, which restores the
-    // fallback to resolve().
-    function test_Addr_ETHCoinRecordSurvivesTransferUntilCleared() public {
+    // A name has one ETH address. setAddr and setAddrForCoin(60) write the same slot, so resolve()
+    // and both addr() overloads always agree, and a buyer's setAddr replaces whatever the seller set.
+    function test_Addr_ETHCoinRecordIsTheSameRecordAsSetAddr() public {
         uint256 tokenId = _registerName("alice", alice);
         vm.prank(alice);
-        nft.setAddrForCoin(tokenId, 60, abi.encodePacked(alice));
+        nft.setAddrForCoin(tokenId, 60, abi.encodePacked(carol));
+        assertEq(nft.resolve(tokenId), carol);
+        assertEq(nft.addr(bytes32(tokenId)), carol);
+        assertEq(nft.addr(tokenId, 60), abi.encodePacked(carol));
+        assertEq(nft.addr(bytes32(tokenId), 60), abi.encodePacked(carol));
+
         vm.prank(alice);
         nft.transferFrom(alice, bob, tokenId);
-
         vm.prank(bob);
         nft.setAddr(tokenId, bob);
         assertEq(nft.resolve(tokenId), bob);
-        assertEq(nft.addr(bytes32(tokenId), 60), abi.encodePacked(alice), "multichain lookups still pay the seller");
-
-        vm.prank(bob);
-        nft.setAddrForCoin(tokenId, 60, "");
+        assertEq(nft.addr(tokenId, 60), abi.encodePacked(bob), "the seller's address is gone");
         assertEq(nft.addr(bytes32(tokenId), 60), abi.encodePacked(bob));
-        assertEq(nft.addr(tokenId, 60), abi.encodePacked(bob));
+    }
+
+    function test_Addr_ETHCoinRecordClearedWithEmptyBytesFallsBackToOwner() public {
+        uint256 tokenId = _registerName("alice", alice);
+        vm.startPrank(alice);
+        nft.setAddr(tokenId, carol);
+        nft.setAddrForCoin(tokenId, 60, "");
+        vm.stopPrank();
+        assertEq(nft.resolve(tokenId), alice);
+        assertEq(nft.addr(tokenId, 60), abi.encodePacked(alice));
+        assertEq(nft.addr(bytes32(tokenId), 60), abi.encodePacked(alice));
+    }
+
+    function test_Addr_ETHCoinRecordMustBe20BytesOrEmpty() public {
+        uint256 tokenId = _registerName("alice", alice);
+        vm.startPrank(alice);
+        vm.expectRevert(NameNFT.InvalidLength.selector);
+        nft.setAddrForCoin(tokenId, 60, hex"00");
+        vm.expectRevert(NameNFT.InvalidLength.selector);
+        nft.setAddrForCoin(tokenId, 60, abi.encodePacked(carol, uint8(1)));
+        vm.expectRevert(NameNFT.InvalidLength.selector);
+        nft.setAddrForCoin(tokenId, 60, abi.encode(carol));
+        vm.stopPrank();
+        assertEq(nft.resolve(tokenId), alice);
+    }
+
+    // Both ENS events are emitted by either setter, so an indexer following one of them misses nothing.
+    function test_Addr_BothSettersEmitBothEvents() public {
+        uint256 tokenId = _registerName("alice", alice);
+        vm.startPrank(alice);
+
+        vm.expectEmit(true, false, false, true);
+        emit AddrChanged(bytes32(tokenId), carol);
+        vm.expectEmit(true, false, false, true);
+        emit AddressChanged(bytes32(tokenId), 60, abi.encodePacked(carol));
+        nft.setAddr(tokenId, carol);
+
+        vm.expectEmit(true, false, false, true);
+        emit AddrChanged(bytes32(tokenId), bob);
+        vm.expectEmit(true, false, false, true);
+        emit AddressChanged(bytes32(tokenId), 60, abi.encodePacked(bob));
+        nft.setAddrForCoin(tokenId, 60, abi.encodePacked(bob));
+
+        vm.expectEmit(true, false, false, true);
+        emit AddrChanged(bytes32(tokenId), address(0));
+        vm.expectEmit(true, false, false, true);
+        emit AddressChanged(bytes32(tokenId), 60, "");
+        nft.setAddr(tokenId, address(0));
+        vm.stopPrank();
+    }
+
+    function test_Addr_OtherCoinTypesKeepTheirOwnRecords() public {
+        uint256 tokenId = _registerName("alice", alice);
+        vm.startPrank(alice);
+        nft.setAddrForCoin(tokenId, 0, hex"0014aabbccdd");
+        nft.setAddr(tokenId, carol);
+        vm.stopPrank();
+        assertEq(nft.addr(tokenId, 0), hex"0014aabbccdd");
+        assertEq(nft.addr(bytes32(tokenId), 0), hex"0014aabbccdd");
+        assertEq(nft.addr(tokenId, 60), abi.encodePacked(carol));
+    }
+
+    // The ENS ITextResolver event: the key's hash as a topic, and the key and value in the data.
+    function test_TextChanged_IsTheEnsEvent() public {
+        uint256 tokenId = _registerName("alice", alice);
+        vm.recordLogs();
+        vm.prank(alice);
+        nft.setText(tokenId, "bitsocial", "12D3KooWAlice");
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        assertEq(logs.length, 1);
+        assertEq(logs[0].topics[0], keccak256("TextChanged(bytes32,string,string,string)"));
+        assertEq(logs[0].topics[1], bytes32(tokenId));
+        assertEq(logs[0].topics[2], keccak256("bitsocial"));
+        (string memory key, string memory value) = abi.decode(logs[0].data, (string, string));
+        assertEq(key, "bitsocial");
+        assertEq(value, "12D3KooWAlice");
     }
 
     function test_RecordVersion_ClearsOnReregistration() public {

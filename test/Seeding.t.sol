@@ -26,7 +26,7 @@ contract SeedingTest is Test {
         uint256 indexed tokenId, string label, address indexed owner, uint256 expiresAt
     );
     event SubdomainRegistered(uint256 indexed tokenId, uint256 indexed parentId, string label);
-    event TextChanged(bytes32 indexed node, string indexed key, string value);
+    event TextChanged(bytes32 indexed node, string indexed indexedKey, string key, string value);
     event RegistrationOpening(uint256 openAt);
 
     function setUp() public {
@@ -189,7 +189,7 @@ contract SeedingTest is Test {
         vm.expectEmit(true, true, false, true);
         emit NameRegistered(id, "alice", alice, block.timestamp + REGISTRATION_PERIOD);
         vm.expectEmit(true, true, false, true);
-        emit TextChanged(bytes32(id), "bitsocial", "12D3KooWAlice");
+        emit TextChanged(bytes32(id), "bitsocial", "bitsocial", "12D3KooWAlice");
         vm.prank(stranger);
         _seed(nft, es[0]);
 
@@ -233,7 +233,7 @@ contract SeedingTest is Test {
         vm.expectEmit(true, true, false, true);
         emit SubdomainRegistered(id, parentId, "sub");
         vm.expectEmit(true, true, false, true);
-        emit TextChanged(bytes32(id), "bitsocial", "12D3KooWSub");
+        emit TextChanged(bytes32(id), "bitsocial", "bitsocial", "12D3KooWSub");
         _seed(nft, es[2]);
 
         // Owned by the listed owner, not by the parent's owner.
