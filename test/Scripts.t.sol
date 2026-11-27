@@ -73,8 +73,8 @@ contract ScriptsTest is Test {
 
     function test_Load_PublishedTree() public view {
         (bytes32 root, uint256 count) = this.load("test/fixtures/seed-tree.json");
-        assertEq(root, 0x9d9fbe57a6b7aabb9821df8af3b5b7685db9a176787d51da5da16de9003b8e8b);
-        assertEq(count, 119);
+        assertEq(root, 0xab167d09136f4ee8dc77c5005235e879e63173d069baf7b48ebdbd8ff3040bee);
+        assertEq(count, 138);
     }
 
     /// A value edited after the tree was built no longer hashes to its leaf.
@@ -173,7 +173,7 @@ contract ScriptsTest is Test {
         harness.seedAll(nft, es);
         assertLt(gasBefore - gasleft(), 2 * 12_000_000);
 
-        assertEq(nft.seededCount(), 119);
+        assertEq(nft.seededCount(), 138);
         assertEq(nft.openAt(), block.timestamp + 1 hours);
     }
 }
