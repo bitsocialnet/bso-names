@@ -9,9 +9,10 @@ The registry is one contract, [`src/NameNFT.sol`](src/NameNFT.sol). It is a fork
 owner, admin, proxy, pause or upgrade path.
 
 **Status:** not deployed on Ethereum mainnet. A test deployment is on Sepolia at
-[`0x0E1d1c4Df4221335b7E906c587f5025265De2042`](https://sepolia.etherscan.io/address/0x0E1d1c4Df4221335b7E906c587f5025265De2042#code),
-deployed from commit `b1c3c44`, verified on Etherscan, and seeded with the preliminary seed list of
-BSIP-13 (119 entries). `FEE_RECIPIENT` has no code on Sepolia, so `sunset()` cannot be called there.
+[`0x897464025Cd22A3d1b3a8760d5E4dBe2C572D708`](https://sepolia.etherscan.io/address/0x897464025Cd22A3d1b3a8760d5E4dBe2C572D708#code),
+deployed from commit `1ce15d3`, verified on Etherscan, and seeded with the preliminary seed list of
+BSIP-13 (138 entries, root `0xab167d09136f4ee8dc77c5005235e879e63173d069baf7b48ebdbd8ff3040bee`).
+`FEE_RECIPIENT` has no code on Sepolia, so `sunset()` cannot be called there.
 
 ## Changes from upstream
 
@@ -103,7 +104,8 @@ forge build --sizes   # NameNFT must stay under 24,576 bytes
 ## Deploy
 
 The scripts read the seed tree, an OpenZeppelin `StandardMerkleTree` dump, from the path in
-`SEED_TREE`.
+`SEED_TREE`. The file must be inside this repository: `foundry.toml` lets the scripts read no other
+paths, and `forge script` fails with "not allowed to be accessed" otherwise.
 
 ```bash
 export SEED_TREE=path/to/seed-tree.json
