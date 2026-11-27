@@ -1,0 +1,8 @@
+# Changes to what gets deployed need the registry owner's approval. The contract is immutable once
+# on mainnet, so the source, the deploy and seed scripts, and the compiler settings are covered.
+/src/              @Rinse12
+/script/           @Rinse12
+/foundry.toml      @Rinse12
+/foundry.lock      @Rinse12
+/.gitmodules       @Rinse12
+/.github/CODEOWNERS @Rinse12
